@@ -1,3 +1,5 @@
+import 'environment_profile.dart';
+
 /// A mode is no longer a fixed choice of four — it's data, so the user can
 /// add their own. Every mode still has to render as *something*, so each
 /// one picks one of four reusable content shapes (`LayoutArchetype`) rather
@@ -47,6 +49,17 @@ class Mode {
   /// data, so this list is the entire "integration" surface of a mode.
   List<SceneTriggerRef> sceneTriggers;
 
+  /// Minutes since midnight (0–1439), or null for no fixed schedule. A
+  /// mode with this set switches to deterministically every day at that
+  /// time — the direct complement to `RoutineLearner`'s organic, "seen it
+  /// 3+ times" learning: this fires from day one, with no history needed.
+  int? scheduledMinuteOfDay;
+
+  /// What should actually be true in the room/on the device when this
+  /// mode is active — applied in full every time the mode changes, not
+  /// just on a manual trigger. See `AppState._applyEnvironment`.
+  EnvironmentProfile? environment;
+
   Mode({
     required this.id,
     required this.label,
@@ -54,6 +67,8 @@ class Mode {
     required this.layout,
     this.builtIn = false,
     List<SceneTriggerRef>? sceneTriggers,
+    this.scheduledMinuteOfDay,
+    this.environment,
   }) : sceneTriggers = sceneTriggers ?? [];
 
   Map<String, dynamic> toJson() => {
@@ -63,6 +78,8 @@ class Mode {
         'layout': layout.name,
         'builtIn': builtIn,
         'sceneTriggers': sceneTriggers.map((s) => s.toJson()).toList(),
+        'scheduledMinuteOfDay': scheduledMinuteOfDay,
+        'environment': environment?.toJson(),
       };
 
   factory Mode.fromJson(Map<String, dynamic> json) => Mode(
@@ -77,7 +94,19 @@ class Mode {
         sceneTriggers: (json['sceneTriggers'] as List? ?? [])
             .map((s) => SceneTriggerRef.fromJson(s as Map<String, dynamic>))
             .toList(),
+        scheduledMinuteOfDay: json['scheduledMinuteOfDay'] as int?,
+        environment: json['environment'] == null
+            ? null
+            : EnvironmentProfile.fromJson(json['environment'] as Map<String, dynamic>),
       );
+
+  static String formatMinuteOfDay(int minute) {
+    final h = minute ~/ 60;
+    final m = minute % 60;
+    final period = h >= 12 ? 'PM' : 'AM';
+    final h12 = (h % 12 == 0) ? 12 : h % 12;
+    return '$h12:${m.toString().padLeft(2, '0')} $period';
+  }
 
   /// The four modes DayOne ships with. A fresh profile always starts from
   /// exactly these; anything else the user adds is appended alongside them.
@@ -88,6 +117,11 @@ class Mode {
           tagline: 'Calm surroundings, guided and detailed.',
           layout: LayoutArchetype.guided,
           builtIn: true,
+          environment: const EnvironmentProfile(
+            brightness: 90,
+            volume: 40,
+            alexaSceneId: 'dayone_focus',
+          ),
         ),
         Mode(
           id: 'quick',
@@ -95,6 +129,11 @@ class Mode {
           tagline: 'Busy surroundings — short, visual, low-friction.',
           layout: LayoutArchetype.quick,
           builtIn: true,
+          environment: const EnvironmentProfile(
+            brightness: 80,
+            volume: 60,
+            alexaSceneId: 'dayone_quick',
+          ),
         ),
         Mode(
           id: 'explore',
@@ -102,6 +141,11 @@ class Mode {
           tagline: 'Calm surroundings, exploring independently.',
           layout: LayoutArchetype.browse,
           builtIn: true,
+          environment: const EnvironmentProfile(
+            brightness: 70,
+            volume: 50,
+            alexaSceneId: 'dayone_explore',
+          ),
         ),
         Mode(
           id: 'relax',
@@ -109,6 +153,11 @@ class Mode {
           tagline: 'Calm and quiet — minimal interruptions.',
           layout: LayoutArchetype.minimal,
           builtIn: true,
+          environment: const EnvironmentProfile(
+            brightness: 25,
+            volume: 10,
+            alexaSceneId: 'dayone_relax',
+          ),
         ),
       ];
 }

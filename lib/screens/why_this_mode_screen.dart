@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../app_state.dart';
 import '../theme/app_theme.dart';
+import 'routines_screen.dart';
 
 /// Makes the engine's decision inspectable instead of a black box — and,
 /// now that the engine learns, shows that it's learning: the weights per
@@ -66,7 +67,7 @@ class WhyThisModeScreen extends StatelessWidget {
                         ClipRRect(
                           borderRadius: BorderRadius.circular(6),
                           child: LinearProgressIndicator(
-                            value: confidence.clamp(0, 1),
+                            value: confidence.clamp(0, 1).toDouble(),
                             minHeight: 10,
                             backgroundColor: AppColors.line,
                             color: isWinner ? AppColors.accent : AppColors.inkSoft,
@@ -105,17 +106,28 @@ class WhyThisModeScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 24),
-                const Text(
-                  'LEARNED ROUTINES',
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    letterSpacing: 2,
-                    color: AppColors.accent,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'LEARNED ROUTINES',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        letterSpacing: 2,
+                        color: AppColors.accent,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const RoutinesScreen()),
+                      ),
+                      child: const Text('See all'),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 4),
                 if (state.routines.allRoutines().isEmpty)
                   const Text(
                     'None yet — DayOne needs to see the same mode happen at '
@@ -163,7 +175,7 @@ class WhyThisModeScreen extends StatelessWidget {
                         margin: const EdgeInsets.only(bottom: 10),
                         child: ListTile(
                           leading: const Icon(Icons.bolt, color: AppColors.accent),
-                          title: Text('Fired scene "${entry.sceneId}"'),
+                          title: Text('${entry.adapterLabel}: "${entry.sceneId}"'),
                           subtitle: Text(
                             _formatTime(entry.at),
                             style: const TextStyle(color: AppColors.inkSoft),

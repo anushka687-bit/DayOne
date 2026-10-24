@@ -2,16 +2,20 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'engine/alexa_trigger_adapter.dart';
 import 'engine/mock_trigger_adapter.dart';
 import 'engine/personalization_engine.dart';
 import 'engine/personalization_model.dart';
 import 'engine/routine_learner.dart';
 import 'engine/trigger_adapter.dart';
+import 'engine/windows_brightness_adapter.dart';
+import 'engine/windows_volume_adapter.dart';
 import 'models/context_snapshot.dart';
 import 'models/mode.dart';
 import 'models/pending_transition.dart';
 import 'models/preference_profile.dart';
 import 'models/task_item.dart';
+import 'services/notification_service.dart';
 import 'storage/mode_store.dart';
 import 'storage/profile_store.dart';
 import 'storage/routine_store.dart';
@@ -54,9 +58,23 @@ class AppState extends ChangeNotifier {
   /// Home-Assistant or IFTTT webhook) would register alongside it.
   final Map<String, TriggerAdapter> adapters = {
     'mock': MockTriggerAdapter(),
+    'windows_brightness': WindowsBrightnessAdapter(),
+    'windows_volume': WindowsVolumeAdapter(),
+    'alexa': AlexaTriggerAdapter(),
   };
 
   MockTriggerAdapter get mockAdapter => adapters['mock'] as MockTriggerAdapter;
+  WindowsBrightnessAdapter get windowsBrightnessAdapter =>
+      adapters['windows_brightness'] as WindowsBrightnessAdapter;
+  WindowsVolumeAdapter get windowsVolumeAdapter =>
+      adapters['windows_volume'] as WindowsVolumeAdapter;
+  AlexaTriggerAdapter get alexaAdapter => adapters['alexa'] as AlexaTriggerAdapter;
+
+  /// A date string per mode id — guards a scheduled mode from re-firing
+  /// every ~20 seconds for as long as the clock sits on its scheduled
+  /// minute. Ephemeral (not persisted): a restart mid-day can refire a
+  /// schedule once more that day, which is a fine trade for the simplicity.
+  final Map<String, String> _scheduledFiredToday = {};
 
   PreferenceProfile? _preference;
   List<Mode> _modes = Mode.builtIns();
@@ -68,6 +86,7 @@ class AppState extends ChangeNotifier {
   PendingTransition? _pendingTransition;
   DateTime? _simulatedNow;
   List<TaskItem> _tasks = [];
+  final List<TransitionLogEntry> _transitionLog = [];
   bool _loading = true;
 
   Timer? _pendingTimer;
@@ -83,13 +102,28 @@ class AppState extends ChangeNotifier {
   PendingTransition? get pendingTransition => _pendingTransition;
   bool get hasProfile => _preference != null;
   bool get isLoading => _loading;
-  List<TriggerLogEntry> get triggerLog => mockAdapter.log;
+  /// Every adapter's fired scenes, merged and newest first — what "no info
+  /// shared, only the trigger" actually looks like in this build.
+  List<TriggerLogEntry> get triggerLog {
+    final all = [
+      ...mockAdapter.log,
+      ...windowsBrightnessAdapter.log,
+      ...windowsVolumeAdapter.log,
+      ...alexaAdapter.log,
+    ];
+    all.sort((a, b) => b.at.compareTo(a.at));
+    return all;
+  }
 
   /// The real content behind "Today's deep work" and its siblings.
   /// Order is priority: index 0 is the top item in Focus Mode, the one
   /// Quick Mode's "Mark done"/"Snooze" act on.
   List<TaskItem> get tasks => List.unmodifiable(_tasks);
   List<TaskItem> get pendingTasks => _tasks.where((t) => !t.done).toList();
+
+  /// Every applied/cancelled/override decision, newest first — the
+  /// "Recent decisions" trail on the Routines screen.
+  List<TransitionLogEntry> get transitionLog => List.unmodifiable(_transitionLog);
 
   /// "Now," for both the countdown and the routine check — overridable via
   /// `simulateClock` so a demo can show a time-based routine firing without
@@ -101,6 +135,7 @@ class AppState extends ChangeNotifier {
       _modes.firstWhere((m) => m.id == _currentModeId, orElse: () => _modes.first);
 
   Future<void> bootstrap() async {
+    await NotificationService.instance.init(onCancelAction: cancelPendingTransition);
     _preference = await _profileStore.load();
     _modes = await _modeStore.load();
     _model = await _profileStore.loadModel() ?? PersonalizationModel.seed(_modes);
@@ -134,6 +169,7 @@ class AppState extends ChangeNotifier {
       await _profileStore.saveCurrentModeId(_currentModeId!);
       _routines.record(effectiveNow, _currentModeId!);
       await _routineStore.save(_routines);
+      await _applyEnvironment(currentMode);
     }
     _startRoutineCheck();
     notifyListeners();
@@ -180,6 +216,7 @@ class AppState extends ChangeNotifier {
     );
     _pendingTimer = Timer(const Duration(minutes: 5), _applyPendingTransition);
     _tickTimer = Timer.periodic(const Duration(seconds: 1), (_) => notifyListeners());
+    NotificationService.instance.notifyPendingTransition(toLabel: target.label, reason: reason);
     notifyListeners();
   }
 
@@ -192,6 +229,7 @@ class AppState extends ChangeNotifier {
     _pendingTimer?.cancel();
     _tickTimer?.cancel();
     _pendingTransition = null;
+    await NotificationService.instance.cancelPendingNotification();
 
     if (_preference != null && _model != null) {
       _engine.learnFromCorrection(
@@ -203,6 +241,12 @@ class AppState extends ChangeNotifier {
       );
       await _profileStore.saveModel(_model!);
     }
+    _logTransition(
+      from: pending.from.label,
+      to: pending.to.label,
+      reason: pending.reason,
+      outcome: 'cancelled',
+    );
     notifyListeners();
   }
 
@@ -225,9 +269,17 @@ class AppState extends ChangeNotifier {
     _currentModeId = pending.to.id;
     await _profileStore.saveCurrentModeId(_currentModeId!);
     await _fireScenes(pending.to);
+    await _applyEnvironment(pending.to);
+    await NotificationService.instance.notifyApplied(pending.to.label);
 
     _routines.record(effectiveNow, pending.to.id);
     await _routineStore.save(_routines);
+    _logTransition(
+      from: pending.from.label,
+      to: pending.to.label,
+      reason: pending.reason,
+      outcome: 'applied',
+    );
 
     notifyListeners();
   }
@@ -243,6 +295,7 @@ class AppState extends ChangeNotifier {
   Future<void> recordOverride(String newModeId) async {
     if (_preference == null || _model == null) return;
     final awayFrom = _decision?.modeId ?? _currentModeId;
+    final previousLabel = currentMode.label;
 
     _engine.learnFromCorrection(
       model: _model!,
@@ -261,12 +314,29 @@ class AppState extends ChangeNotifier {
     await _profileStore.saveCurrentModeId(newModeId);
     final mode = _modes.firstWhere((m) => m.id == newModeId, orElse: () => currentMode);
     await _fireScenes(mode);
+    await _applyEnvironment(mode);
 
     _routines.record(effectiveNow, newModeId);
     await _routineStore.save(_routines);
+    _logTransition(from: previousLabel, to: mode.label, reason: 'Manual override', outcome: 'override');
 
     _recompute();
     notifyListeners();
+  }
+
+  void _logTransition({
+    required String from,
+    required String to,
+    required String reason,
+    required String outcome,
+  }) {
+    _transitionLog.insert(
+      0,
+      TransitionLogEntry(at: effectiveNow, fromLabel: from, toLabel: to, reason: reason, outcome: outcome),
+    );
+    if (_transitionLog.length > 30) {
+      _transitionLog.removeRange(30, _transitionLog.length);
+    }
   }
 
   Future<void> _fireScenes(Mode mode) async {
@@ -275,6 +345,25 @@ class AppState extends ChangeNotifier {
       if (adapter != null) {
         await adapter.fire(ref.sceneId);
       }
+    }
+  }
+
+  /// The "every mode has a default environment" piece: whenever a mode
+  /// becomes active, apply its whole `EnvironmentProfile` at once —
+  /// brightness, volume, and Alexa scene together — not just whatever
+  /// scene triggers happen to be attached. Each piece no-ops safely if the
+  /// mode didn't set it.
+  Future<void> _applyEnvironment(Mode mode) async {
+    final env = mode.environment;
+    if (env == null || env.isEmpty) return;
+    if (env.brightness != null) {
+      await windowsBrightnessAdapter.fire('brightness:${env.brightness}');
+    }
+    if (env.volume != null) {
+      await windowsVolumeAdapter.fire('volume:${env.volume}');
+    }
+    if (env.alexaSceneId != null) {
+      await alexaAdapter.fire(env.alexaSceneId!);
     }
   }
 
@@ -359,13 +448,36 @@ class AppState extends ChangeNotifier {
 
   void _checkRoutines() {
     if (_preference == null || _currentModeId == null) return;
-    final due = _routines.dueRoutine(effectiveNow, _currentModeId!);
+    final now = effectiveNow;
+    _checkScheduledModes(now);
+
+    final due = _routines.dueRoutine(now, _currentModeId!);
     if (due == null) return;
     _proposeTransition(
       due.modeId,
       "You're usually in ${_labelFor(due.modeId)} around "
       '${due.timeLabel} on ${due.weekdayLabel}s',
     );
+  }
+
+  /// The deterministic counterpart to learned routines: a mode with
+  /// `scheduledMinuteOfDay` set switches every day at that exact time,
+  /// starting the very first day — no history needed, unlike a learned
+  /// routine which needs to be *seen* a few times first.
+  void _checkScheduledModes(DateTime now) {
+    final todayKey = '${now.year}-${now.month}-${now.day}';
+    final nowMinute = now.hour * 60 + now.minute;
+
+    for (final mode in _modes) {
+      final scheduled = mode.scheduledMinuteOfDay;
+      if (scheduled == null || scheduled != nowMinute) continue;
+      if (_scheduledFiredToday[mode.id] == todayKey) continue;
+
+      _scheduledFiredToday[mode.id] = todayKey;
+      if (mode.id == _currentModeId) continue; // already there — nothing to propose
+
+      _proposeTransition(mode.id, 'Scheduled for ${Mode.formatMinuteOfDay(scheduled)} every day');
+    }
   }
 
   String _labelFor(String modeId) =>
@@ -389,6 +501,7 @@ class AppState extends ChangeNotifier {
     await _profileStore.deleteAll();
     await _modeStore.deleteAll();
     await _routineStore.deleteAll();
+    await NotificationService.instance.cancelPendingNotification();
     mockAdapter.log.clear();
 
     _preference = null;
@@ -400,6 +513,7 @@ class AppState extends ChangeNotifier {
     _decision = null;
     _pendingTransition = null;
     _simulatedNow = null;
+    _transitionLog.clear();
     notifyListeners();
   }
 

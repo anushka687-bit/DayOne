@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../models/environment_profile.dart';
 import '../models/mode.dart';
 import '../theme/app_theme.dart';
 
@@ -56,9 +57,25 @@ class ModesScreen extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       'Layout: ${mode.layout.label}'
-                      '${mode.sceneTriggers.isNotEmpty ? ' · ${mode.sceneTriggers.length} scene linked' : ''}',
+                      '${mode.sceneTriggers.isNotEmpty ? ' · ${mode.sceneTriggers.length} scene linked' : ''}'
+                      '${mode.scheduledMinuteOfDay != null ? ' · daily at ${Mode.formatMinuteOfDay(mode.scheduledMinuteOfDay!)}' : ''}',
                       style: const TextStyle(color: AppColors.inkSoft, fontSize: 12),
                     ),
+                    if (mode.environment != null && !mode.environment!.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(
+                          [
+                            if (mode.environment!.brightness != null)
+                              'brightness ${mode.environment!.brightness}%',
+                            if (mode.environment!.volume != null)
+                              'volume ${mode.environment!.volume}%',
+                            if (mode.environment!.alexaSceneId != null)
+                              'Alexa "${mode.environment!.alexaSceneId}"',
+                          ].join(' · '),
+                          style: const TextStyle(color: AppColors.accent, fontSize: 11),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -124,7 +141,23 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
   late TextEditingController _tagline;
   late TextEditingController _sceneId;
   late TextEditingController _sceneLabel;
+  late TextEditingController _alexaEventName;
   late LayoutArchetype _layout;
+  late String _adapterId;
+  int? _scheduledMinute;
+
+  // The mode's default environment — applied in full every time the mode
+  // becomes active (see AppState._applyEnvironment), not just via the
+  // one-off "smart-home scene" trigger below.
+  bool _brightnessEnabled = false;
+  double _brightnessPercent = 80;
+  bool _volumeEnabled = false;
+  double _volumePercent = 50;
+  bool _alexaEnabled = false;
+
+  static const _adapterChoices = {
+    'mock': 'Simulated smart-home link',
+  };
 
   bool get _isNew => widget.existing == null;
   bool get _identityEditable => _isNew || widget.existing?.builtIn == false;
@@ -136,9 +169,30 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
     _label = TextEditingController(text: m?.label ?? '');
     _tagline = TextEditingController(text: m?.tagline ?? '');
     _layout = m?.layout ?? LayoutArchetype.guided;
+    _scheduledMinute = m?.scheduledMinuteOfDay;
+
+    final env = m?.environment;
+    _brightnessEnabled = env?.brightness != null;
+    _brightnessPercent = (env?.brightness ?? 80).toDouble();
+    _volumeEnabled = env?.volume != null;
+    _volumePercent = (env?.volume ?? 50).toDouble();
+    _alexaEnabled = env?.alexaSceneId != null;
+    _alexaEventName = TextEditingController(text: env?.alexaSceneId ?? '');
+
     final firstTrigger = (m?.sceneTriggers.isNotEmpty ?? false) ? m!.sceneTriggers.first : null;
+    _adapterId = 'mock';
     _sceneId = TextEditingController(text: firstTrigger?.sceneId ?? '');
     _sceneLabel = TextEditingController(text: firstTrigger?.label ?? '');
+  }
+
+  Future<void> _pickTime() async {
+    final initial = _scheduledMinute != null
+        ? TimeOfDay(hour: _scheduledMinute! ~/ 60, minute: _scheduledMinute! % 60)
+        : TimeOfDay.now();
+    final picked = await showTimePicker(context: context, initialTime: initial);
+    if (picked != null) {
+      setState(() => _scheduledMinute = picked.hour * 60 + picked.minute);
+    }
   }
 
   @override
@@ -185,15 +239,112 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
                   .toList(),
             ),
             const SizedBox(height: 20),
+            const Text('Run on a schedule (optional)', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            const Text(
+              'Switches to this mode at the same time every day, starting '
+              'immediately — no history needed first (unlike a routine '
+              'DayOne learns on its own from repeated use).',
+              style: TextStyle(color: AppColors.inkSoft, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _scheduledMinute == null
+                        ? 'No fixed time set'
+                        : 'Every day at ${Mode.formatMinuteOfDay(_scheduledMinute!)}',
+                    style: const TextStyle(color: AppColors.ink),
+                  ),
+                ),
+                TextButton(onPressed: _pickTime, child: const Text('Set time')),
+                if (_scheduledMinute != null)
+                  TextButton(
+                    onPressed: () => setState(() => _scheduledMinute = null),
+                    child: const Text('Clear'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            const Text('Default environment (optional)',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            const Text(
+              'Applied in full the moment this mode becomes active — real on '
+              'this laptop for brightness and volume; Alexa sends only an '
+              'opaque event name, nothing about your preferences or sensors.',
+              style: TextStyle(color: AppColors.inkSoft, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Screen brightness'),
+              value: _brightnessEnabled,
+              onChanged: (v) => setState(() => _brightnessEnabled = v),
+            ),
+            if (_brightnessEnabled) ...[
+              Text('${_brightnessPercent.round()}%',
+                  style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.w600)),
+              Slider(
+                value: _brightnessPercent,
+                min: 0,
+                max: 100,
+                divisions: 20,
+                onChanged: (v) => setState(() => _brightnessPercent = v),
+              ),
+            ],
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('System volume'),
+              subtitle: const Text('Approximate — simulated via volume keys',
+                  style: TextStyle(fontSize: 11)),
+              value: _volumeEnabled,
+              onChanged: (v) => setState(() => _volumeEnabled = v),
+            ),
+            if (_volumeEnabled) ...[
+              Text('${_volumePercent.round()}%',
+                  style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.w600)),
+              Slider(
+                value: _volumePercent,
+                min: 0,
+                max: 100,
+                divisions: 20,
+                onChanged: (v) => setState(() => _volumePercent = v),
+              ),
+            ],
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Alexa (via IFTTT)'),
+              subtitle: const Text('Logged — no account needed to demo',
+                  style: TextStyle(fontSize: 11)),
+              value: _alexaEnabled,
+              onChanged: (v) => setState(() => _alexaEnabled = v),
+            ),
+            if (_alexaEnabled)
+              TextField(
+                controller: _alexaEventName,
+                decoration: const InputDecoration(labelText: 'IFTTT event name'),
+              ),
+            const SizedBox(height: 20),
             const Text('Smart-home scene (optional)',
                 style: TextStyle(fontWeight: FontWeight.w600)),
             const SizedBox(height: 4),
             const Text(
-              'Only this scene id is ever sent — nothing about your '
-              'preferences or sensors.',
+              'A separate, one-off trigger — only an opaque scene id is ever '
+              'sent.',
               style: TextStyle(color: AppColors.inkSoft, fontSize: 12),
             ),
             const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              value: _adapterId,
+              decoration: const InputDecoration(labelText: 'Integration'),
+              items: _adapterChoices.entries
+                  .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+                  .toList(),
+              onChanged: (v) => setState(() => _adapterId = v ?? 'mock'),
+            ),
+            const SizedBox(height: 14),
             TextField(
               controller: _sceneLabel,
               decoration: const InputDecoration(labelText: 'Label (for you)'),
@@ -220,13 +371,22 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
   void _save() {
     final state = context.read<AppState>();
     final sceneTriggers = <SceneTriggerRef>[];
+
     if (_sceneId.text.trim().isNotEmpty) {
       sceneTriggers.add(SceneTriggerRef(
-        adapterId: 'mock',
+        adapterId: _adapterId,
         sceneId: _sceneId.text.trim(),
         label: _sceneLabel.text.trim().isEmpty ? _sceneId.text.trim() : _sceneLabel.text.trim(),
       ));
     }
+
+    final environment = EnvironmentProfile(
+      brightness: _brightnessEnabled ? _brightnessPercent.round() : null,
+      volume: _volumeEnabled ? _volumePercent.round() : null,
+      alexaSceneId: _alexaEnabled && _alexaEventName.text.trim().isNotEmpty
+          ? _alexaEventName.text.trim()
+          : null,
+    );
 
     if (_isNew) {
       final id = 'custom_${DateTime.now().millisecondsSinceEpoch}';
@@ -236,6 +396,8 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
         tagline: _tagline.text.trim(),
         layout: _layout,
         sceneTriggers: sceneTriggers,
+        scheduledMinuteOfDay: _scheduledMinute,
+        environment: environment.isEmpty ? null : environment,
       ));
     } else {
       final existing = widget.existing!;
@@ -246,6 +408,8 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
         layout: existing.builtIn ? existing.layout : _layout,
         builtIn: existing.builtIn,
         sceneTriggers: sceneTriggers,
+        scheduledMinuteOfDay: _scheduledMinute,
+        environment: environment.isEmpty ? null : environment,
       ));
     }
     Navigator.of(context).pop();

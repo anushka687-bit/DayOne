@@ -119,31 +119,37 @@ class PrivacyScreen extends StatelessWidget {
             style: TextStyle(color: AppColors.inkSoft, fontSize: 13, height: 1.4),
           ),
           const SizedBox(height: 12),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.hub_outlined, size: 18, color: AppColors.accent),
-                      const SizedBox(width: 10),
-                      Text(state.mockAdapter.label,
-                          style: const TextStyle(fontWeight: FontWeight.w600, color: AppColors.ink)),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    state.triggerLog.isEmpty
-                        ? 'No scenes fired yet.'
-                        : '${state.triggerLog.length} scene trigger${state.triggerLog.length == 1 ? '' : 's'} fired so far.',
-                    style: const TextStyle(color: AppColors.inkSoft, fontSize: 13),
-                  ),
-                ],
+          ...state.adapters.values.map((adapter) {
+            final count = state.triggerLog.where((e) => e.adapterLabel == adapter.label).length;
+            return Card(
+              margin: const EdgeInsets.only(bottom: 10),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.hub_outlined, size: 18, color: AppColors.accent),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(adapter.label,
+                              style: const TextStyle(fontWeight: FontWeight.w600, color: AppColors.ink)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      count == 0
+                          ? 'No scenes fired yet.'
+                          : '$count scene trigger${count == 1 ? '' : 's'} fired so far.',
+                      style: const TextStyle(color: AppColors.inkSoft, fontSize: 13),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ),
+            );
+          }),
           const SizedBox(height: 32),
           OutlinedButton.icon(
             onPressed: profile == null ? null : () => _confirmDelete(context),

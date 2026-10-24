@@ -133,7 +133,7 @@ class PersonalizationEngine {
 
   void _nudge(List<double> weights, List<double> features, double lr) {
     for (var i = 0; i < weights.length && i < features.length; i++) {
-      weights[i] = (weights[i] + lr * features[i]).clamp(_minWeight, _maxWeight);
+      weights[i] = (weights[i] + lr * features[i]).clamp(_minWeight, _maxWeight).toDouble();
     }
   }
 }

@@ -15,7 +15,7 @@
 /// need to know anything about it beyond `id`, `label`, and `fire`.
 abstract class TriggerAdapter {
   /// Stable id stored on a `SceneTriggerRef` — e.g. "mock", "webhook",
-  /// "home_assistant".
+  /// "home_assistant", "windows_brightness".
   String get id;
 
   /// Human-readable name for the Modes/Integrations UI.
@@ -24,4 +24,20 @@ abstract class TriggerAdapter {
   /// Fires one scene. No await on a result beyond success/failure; nothing
   /// is read back from the other side.
   Future<void> fire(String sceneId);
+}
+
+/// One fired scene, kept so the Privacy/Why screens can show exactly what
+/// DayOne sent out — an opaque id and a timestamp, nothing else. Shared
+/// across every `TriggerAdapter` so their logs can be merged into one
+/// timeline.
+class TriggerLogEntry {
+  final DateTime at;
+  final String sceneId;
+  final String adapterLabel;
+
+  const TriggerLogEntry({
+    required this.at,
+    required this.sceneId,
+    required this.adapterLabel,
+  });
 }

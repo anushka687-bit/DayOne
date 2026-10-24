@@ -6,6 +6,7 @@ import '../models/mode.dart';
 import '../models/pending_transition.dart';
 import '../models/task_item.dart';
 import '../theme/app_theme.dart';
+import '../widgets/panel.dart';
 import 'why_this_mode_screen.dart';
 
 /// The screen judges actually watch change. Same data, same user — the
@@ -15,6 +16,13 @@ import 'why_this_mode_screen.dart';
 /// four content shapes it was given. The content itself ("Today's deep
 /// work" and friends) is real now too — it comes from `AppState.tasks`,
 /// not a hardcoded string.
+///
+/// The hero card and metrics strip below the app bar follow the same
+/// layout language as the DayOne_Review2_Demo browser prototype — an
+/// eyebrow label, a big heading, a bordered "currently active" panel, and
+/// a row of stat tiles — but every number in them is real: the mode's
+/// actual environment targets, the real pending-task count, the real
+/// count of learned corrections.
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
 
@@ -66,7 +74,7 @@ class DashboardScreen extends StatelessWidget {
         ],
       ),
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -76,8 +84,10 @@ class DashboardScreen extends StatelessWidget {
                 const SizedBox(height: 16),
               ],
               _ModeBanner(mode: mode),
+              const SizedBox(height: 16),
+              _MetricsStrip(mode: mode),
               const SizedBox(height: 24),
-              Expanded(child: _ModeContent(mode: mode)),
+              _ModeContent(mode: mode),
             ],
           ),
         ),
@@ -193,54 +203,134 @@ class _PendingTransitionBanner extends StatelessWidget {
   }
 }
 
+/// The "hero" card: an eyebrow label, a heading, a short explanation, and
+/// the Switch/Why actions on the left; a bordered "currently active" panel
+/// with the mode name, tagline and the engine's confidence score on the
+/// right. Collapses to a single column on narrow windows — the same
+/// breakpoint behaviour as the demo's `.hero-grid`.
 class _ModeBanner extends StatelessWidget {
   final Mode mode;
   const _ModeBanner({required this.mode});
 
   @override
   Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final confidence = state.decision?.confidences[mode.id];
+
     return Container(
-      padding: const EdgeInsets.all(20),
+      width: double.infinity,
+      padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: AppColors.ink,
-        borderRadius: BorderRadius.circular(18),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.line),
       ),
-      child: Row(
-        children: [
-          Expanded(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final stacked = constraints.maxWidth < 620;
+
+          final left = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const EyebrowLabel('Your local personalization layer'),
+              const SizedBox(height: 8),
+              const Text(
+                'Your day, shaped by you.',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.ink,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'DayOne combined your preferences with the current context to pick '
+                '${mode.label} — adjust it any time, or see why it was picked.',
+                style: const TextStyle(color: AppColors.inkSoft, height: 1.45),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  ElevatedButton(
+                    onPressed: () => _showSwitchSheet(context),
+                    child: const Text('Switch mode'),
+                  ),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const WhyThisModeScreen()),
+                    ),
+                    child: const Text('Why this mode?'),
+                  ),
+                ],
+              ),
+            ],
+          );
+
+          final right = Container(
+            width: stacked ? double.infinity : 230,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.accentLight,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColors.line),
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  mode.label.toUpperCase(),
-                  style: const TextStyle(
-                    color: AppColors.accent,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1.5,
-                    fontSize: 13,
+                const Text(
+                  'CURRENTLY ACTIVE',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.4,
+                    color: AppColors.inkSoft,
                   ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  mode.label,
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.ink),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   mode.tagline,
-                  style: const TextStyle(color: AppColors.paper, fontSize: 14),
+                  style: const TextStyle(color: AppColors.inkSoft, fontSize: 12, height: 1.4),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Confidence', style: TextStyle(fontSize: 11, color: AppColors.inkSoft)),
+                    Text(
+                      confidence == null ? '—' : '${(confidence * 100).round()}% score share',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.accent),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ),
-          TextButton(
-            onPressed: () => _showSwitchSheet(context),
-            style: TextButton.styleFrom(foregroundColor: AppColors.paper),
-            child: const Text('Switch'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const WhyThisModeScreen()),
-            ),
-            style: TextButton.styleFrom(foregroundColor: AppColors.accent),
-            child: const Text('Why?'),
-          ),
-        ],
+          );
+
+          if (stacked) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [left, const SizedBox(height: 16), right],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: left),
+              const SizedBox(width: 20),
+              right,
+            ],
+          );
+        },
       ),
     );
   }
@@ -286,6 +376,54 @@ class _ModeBanner extends StatelessWidget {
   }
 }
 
+/// The metrics strip under the hero — mirrors the demo dashboard's
+/// `.metrics` row of four tiles, but every value here is a real number
+/// pulled from `AppState` and the active mode's `EnvironmentProfile`,
+/// not a simulated one.
+class _MetricsStrip extends StatelessWidget {
+  final Mode mode;
+  const _MetricsStrip({required this.mode});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final env = mode.environment;
+    final pendingCount = state.pendingTasks.length;
+    final updateCount = state.model?.updateCount ?? 0;
+
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      children: [
+        MetricTile(
+          icon: Icons.brightness_6_outlined,
+          label: 'Target brightness',
+          value: env?.brightness != null ? '${env!.brightness}%' : '—',
+          note: 'Applied to this laptop',
+        ),
+        MetricTile(
+          icon: Icons.volume_up_outlined,
+          label: 'Target volume',
+          value: env?.volume != null ? '${env!.volume}%' : '—',
+          note: 'Applied to this laptop',
+        ),
+        MetricTile(
+          icon: Icons.checklist_outlined,
+          label: 'Tasks waiting',
+          value: '$pendingCount',
+          note: "In this mode's queue",
+        ),
+        MetricTile(
+          icon: Icons.auto_graph_outlined,
+          label: 'Learned corrections',
+          value: '$updateCount',
+          note: 'Shaping the model',
+        ),
+      ],
+    );
+  }
+}
+
 /// The actual adaptive content. Dispatches on the mode's *layout*, not its
 /// identity, so a custom mode renders using whichever of the four content
 /// shapes it was assigned.
@@ -321,7 +459,8 @@ class _GuidedLayout extends StatelessWidget {
     final top = pending.isNotEmpty ? pending.first : null;
     final steps = pending.take(3).toList();
 
-    return ListView(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Card(
           child: Padding(
@@ -415,6 +554,7 @@ class _QuickLayout extends StatelessWidget {
         GridView.count(
           crossAxisCount: 3,
           shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
           mainAxisSpacing: 12,
           crossAxisSpacing: 12,
           children: [
@@ -511,6 +651,8 @@ class _BrowseLayout extends StatelessWidget {
 
     return GridView.count(
       crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
       mainAxisSpacing: 14,
       crossAxisSpacing: 14,
       childAspectRatio: 1.6,
@@ -557,26 +699,31 @@ class _MinimalLayout extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pendingCount = context.watch<AppState>().pendingTasks.length;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.spa_outlined, size: 56, color: AppColors.accent),
-          const SizedBox(height: 16),
-          const Text(
-            'Nothing urgent.',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: AppColors.ink),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            pendingCount == 0
-                ? 'Notifications held back until you open the app again.'
-                : '$pendingCount thing${pendingCount == 1 ? '' : 's'} waiting, '
-                    'but held back until you open the app again.',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: AppColors.inkSoft),
-          ),
-        ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 56),
+      child: SizedBox(
+        width: double.infinity,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            const Icon(Icons.spa_outlined, size: 56, color: AppColors.accent),
+            const SizedBox(height: 16),
+            const Text(
+              'Nothing urgent.',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: AppColors.ink),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              pendingCount == 0
+                  ? 'Notifications held back until you open the app again.'
+                  : '$pendingCount thing${pendingCount == 1 ? '' : 's'} waiting, '
+                      'but held back until you open the app again.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppColors.inkSoft),
+            ),
+          ],
+        ),
       ),
     );
   }

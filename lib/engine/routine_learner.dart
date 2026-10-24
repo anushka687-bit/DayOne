@@ -86,6 +86,24 @@ class RoutineLearner {
     return routines;
   }
 
+  /// Every (weekday, bucket, mode) combination ever observed, including
+  /// ones not yet confident enough to act on — the raw history behind the
+  /// Routines screen's "All observations" section. Most recent first.
+  List<LearnedRoutine> allObservations() {
+    final list = _counts.entries.map((entry) {
+      final parts = entry.key.split('|');
+      return LearnedRoutine(
+        weekday: int.parse(parts[0]),
+        bucket: int.parse(parts[1]),
+        modeId: parts[2],
+        confidence: entry.value,
+        lastSeen: _lastSeen[entry.key] ?? DateTime.now(),
+      );
+    }).toList();
+    list.sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
+    return list;
+  }
+
   Map<String, dynamic> toJson() => {
         'counts': _counts,
         'lastSeen': _lastSeen.map((k, v) => MapEntry(k, v.toIso8601String())),

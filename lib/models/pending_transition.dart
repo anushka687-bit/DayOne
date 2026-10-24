@@ -28,3 +28,23 @@ class PendingTransition {
     return d.isNegative ? Duration.zero : d;
   }
 }
+
+/// A record of what actually happened to a proposed (or user-driven) mode
+/// change — the human-readable trail behind the Routines screen's "Recent
+/// decisions" section. `outcome` is one of `'applied'`, `'cancelled'`, or
+/// `'override'`.
+class TransitionLogEntry {
+  final DateTime at;
+  final String fromLabel;
+  final String toLabel;
+  final String reason;
+  final String outcome;
+
+  const TransitionLogEntry({
+    required this.at,
+    required this.fromLabel,
+    required this.toLabel,
+    required this.reason,
+    required this.outcome,
+  });
+}

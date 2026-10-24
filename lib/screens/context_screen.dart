@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../app_state.dart';
 import '../models/context_snapshot.dart';
 import '../theme/app_theme.dart';
+import 'routines_screen.dart';
 
 /// Stands in for the ESP32 + BH1750 + MPU6050 + sound sensor during
 /// development and demo. Swapping this for real Bluetooth sensor data later
@@ -29,6 +30,7 @@ class _ContextScreenState extends State<ContextScreen> {
     ('Early morning', 6, 0),
     ('Mid-morning', 9, 30),
     ('Afternoon', 13, 0),
+    ('5:00 PM', 17, 0),
     ('Evening', 18, 0),
     ('Night', 22, 0),
   ];
@@ -55,7 +57,18 @@ class _ContextScreenState extends State<ContextScreen> {
     final pending = state.pendingTransition;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Current context')),
+      appBar: AppBar(
+        title: const Text('Current context'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: 'Routines',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const RoutinesScreen()),
+            ),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
