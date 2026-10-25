@@ -17,10 +17,21 @@ class ModeStore {
     try {
       final list = jsonDecode(raw) as List;
       final modes = list.map((m) => Mode.fromJson(m as Map<String, dynamic>)).toList();
-      return modes.isEmpty ? Mode.builtIns() : modes;
+      return modes.isEmpty ? Mode.builtIns() : _withNewBuiltIns(modes);
     } catch (_) {
       return Mode.builtIns();
     }
+  }
+
+  /// A profile saved before a new built-in mode existed (e.g. Study Mode)
+  /// won't have it in its stored list — `load()` just returns what's on
+  /// disk. This appends any built-in id missing from the saved list, so
+  /// adding a new built-in in code rolls out to existing saved profiles
+  /// too, without needing a full profile delete/reset.
+  List<Mode> _withNewBuiltIns(List<Mode> saved) {
+    final savedIds = saved.map((m) => m.id).toSet();
+    final missing = Mode.builtIns().where((m) => !savedIds.contains(m.id));
+    return [...saved, ...missing];
   }
 
   Future<void> save(List<Mode> modes) async {

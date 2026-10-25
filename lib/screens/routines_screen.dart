@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../engine/launch_learner.dart';
 import '../engine/routine_learner.dart';
 import '../models/pending_transition.dart';
 import '../theme/app_theme.dart';
@@ -11,8 +12,38 @@ import '../theme/app_theme.dart';
 /// an actual routine, and what actually happened each time a change was
 /// proposed or made. "Why this mode?" shows a short version of the first
 /// two; this is the whole thing.
-class RoutinesScreen extends StatelessWidget {
+///
+/// Also where the time-of-day *launch* learning lives — "around 6:00pm,
+/// Spotify usually opens" — a companion to mode routines above, built on
+/// the same "seen it enough times" idea but for launch targets instead of
+/// modes.
+class RoutinesScreen extends StatefulWidget {
   const RoutinesScreen({super.key});
+
+  @override
+  State<RoutinesScreen> createState() => _RoutinesScreenState();
+}
+
+class _RoutinesScreenState extends State<RoutinesScreen> {
+  final _logController = TextEditingController();
+
+  @override
+  void dispose() {
+    _logController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _logNow() async {
+    final target = _logController.text.trim();
+    if (target.isEmpty) return;
+    await context.read<AppState>().logTimedLaunch(target);
+    _logController.clear();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Logged "$target" for right now.')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -20,6 +51,8 @@ class RoutinesScreen extends StatelessWidget {
     final decided = state.routines.allRoutines();
     final observations = state.routines.allObservations();
     final log = state.transitionLog;
+    final learnedLaunches = state.launches.allTimeLaunches();
+    final launchObservations = state.launches.allTimeObservations();
 
     String labelFor(String modeId) {
       final matches = state.modes.where((m) => m.id == modeId);
@@ -64,6 +97,58 @@ class RoutinesScreen extends StatelessWidget {
                   label: labelFor(r.modeId),
                   routine: r,
                   active: r.confidence >= RoutineLearner.confidenceThreshold,
+                )),
+
+          const SizedBox(height: 28),
+          const _SectionHeader('LEARNED LAUNCHES (TIME-BASED)'),
+          const SizedBox(height: 8),
+          Text(
+            'Same idea, for what gets opened instead of which mode — seen '
+            '${LaunchLearner.confidenceThreshold}+ times around the same time of day, '
+            'independent of mode. E.g. "6:00pm → open Spotify."',
+            style: const TextStyle(color: AppColors.inkSoft, fontSize: 13, height: 1.4),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _logController,
+                  decoration: const InputDecoration(
+                    labelText: 'I just opened…',
+                    hintText: 'spotify: or a URL',
+                  ),
+                  onSubmitted: (_) => _logNow(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(onPressed: _logNow, child: const Text('Log now')),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (learnedLaunches.isEmpty)
+            const _EmptyNote('None yet.')
+          else
+            ...learnedLaunches.map((l) => _LaunchCard(launch: l, active: true)),
+
+          const SizedBox(height: 20),
+          const Text(
+            'ALL LAUNCH OBSERVATIONS',
+            style: TextStyle(
+              fontFamily: 'monospace',
+              letterSpacing: 2,
+              color: AppColors.accent,
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 8),
+          if (launchObservations.isEmpty)
+            const _EmptyNote('Nothing logged yet.')
+          else
+            ...launchObservations.take(10).map((l) => _LaunchCard(
+                  launch: l,
+                  active: l.confidence >= LaunchLearner.confidenceThreshold,
                 )),
 
           const SizedBox(height: 28),
@@ -134,6 +219,32 @@ class _ObservationCard extends StatelessWidget {
         ),
         trailing: _Pill(
           text: active ? 'Active routine' : 'Still learning',
+          color: active ? AppColors.accent : AppColors.inkSoft,
+        ),
+      ),
+    );
+  }
+}
+
+class _LaunchCard extends StatelessWidget {
+  final LearnedTimeLaunch launch;
+  final bool active;
+  const _LaunchCard({required this.launch, required this.active});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListTile(
+        leading: Icon(active ? Icons.open_in_new : Icons.hourglass_empty, color: AppColors.accent),
+        title: Text('Open "${launch.target}" around ${launch.timeLabel}'),
+        subtitle: Text(
+          '${launch.weekdayLabel}s — seen ${launch.confidence} '
+          'time${launch.confidence == 1 ? '' : 's'}',
+          style: const TextStyle(color: AppColors.inkSoft),
+        ),
+        trailing: _Pill(
+          text: active ? 'Active' : 'Still learning',
           color: active ? AppColors.accent : AppColors.inkSoft,
         ),
       ),

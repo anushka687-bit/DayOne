@@ -16,19 +16,45 @@ class EnvironmentProfile {
   /// just this one string.
   final String? alexaSceneId;
 
-  const EnvironmentProfile({this.brightness, this.volume, this.alexaSceneId});
+  /// A URL to open in this laptop's default browser the moment this mode
+  /// becomes active — see `WindowsOpenUrlAdapter`. Used e.g. for Study
+  /// Mode opening VTOP automatically instead of the user doing it by hand.
+  final String? openUrl;
 
-  bool get isEmpty => brightness == null && volume == null && alexaSceneId == null;
+  const EnvironmentProfile({this.brightness, this.volume, this.alexaSceneId, this.openUrl});
+
+  bool get isEmpty =>
+      brightness == null && volume == null && alexaSceneId == null && openUrl == null;
+
+  /// Used by the launch learner to swap in a newly-learned `openUrl`
+  /// without disturbing brightness/volume/Alexa. Pass `clearOpenUrl: true`
+  /// to remove it instead of setting a new one.
+  EnvironmentProfile copyWith({
+    int? brightness,
+    int? volume,
+    String? alexaSceneId,
+    String? openUrl,
+    bool clearOpenUrl = false,
+  }) {
+    return EnvironmentProfile(
+      brightness: brightness ?? this.brightness,
+      volume: volume ?? this.volume,
+      alexaSceneId: alexaSceneId ?? this.alexaSceneId,
+      openUrl: clearOpenUrl ? null : (openUrl ?? this.openUrl),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'brightness': brightness,
         'volume': volume,
         'alexaSceneId': alexaSceneId,
+        'openUrl': openUrl,
       };
 
   factory EnvironmentProfile.fromJson(Map<String, dynamic> json) => EnvironmentProfile(
         brightness: json['brightness'] as int?,
         volume: json['volume'] as int?,
         alexaSceneId: json['alexaSceneId'] as String?,
+        openUrl: json['openUrl'] as String?,
       );
 }

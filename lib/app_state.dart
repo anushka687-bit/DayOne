@@ -3,19 +3,23 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'engine/alexa_trigger_adapter.dart';
+import 'engine/launch_learner.dart';
 import 'engine/mock_trigger_adapter.dart';
 import 'engine/personalization_engine.dart';
 import 'engine/personalization_model.dart';
 import 'engine/routine_learner.dart';
 import 'engine/trigger_adapter.dart';
 import 'engine/windows_brightness_adapter.dart';
+import 'engine/windows_open_url_adapter.dart';
 import 'engine/windows_volume_adapter.dart';
 import 'models/context_snapshot.dart';
+import 'models/environment_profile.dart';
 import 'models/mode.dart';
 import 'models/pending_transition.dart';
 import 'models/preference_profile.dart';
 import 'models/task_item.dart';
 import 'services/notification_service.dart';
+import 'storage/launch_store.dart';
 import 'storage/mode_store.dart';
 import 'storage/profile_store.dart';
 import 'storage/routine_store.dart';
@@ -39,17 +43,20 @@ class AppState extends ChangeNotifier {
     ProfileStore? profileStore,
     ModeStore? modeStore,
     RoutineStore? routineStore,
+    LaunchStore? launchStore,
     TaskStore? taskStore,
     PersonalizationEngine? engine,
   })  : _profileStore = profileStore ?? ProfileStore(),
         _modeStore = modeStore ?? ModeStore(),
         _routineStore = routineStore ?? RoutineStore(),
+        _launchStore = launchStore ?? LaunchStore(),
         _taskStore = taskStore ?? TaskStore(),
         _engine = engine ?? PersonalizationEngine();
 
   final ProfileStore _profileStore;
   final ModeStore _modeStore;
   final RoutineStore _routineStore;
+  final LaunchStore _launchStore;
   final TaskStore _taskStore;
   final PersonalizationEngine _engine;
 
@@ -60,6 +67,7 @@ class AppState extends ChangeNotifier {
     'mock': MockTriggerAdapter(),
     'windows_brightness': WindowsBrightnessAdapter(),
     'windows_volume': WindowsVolumeAdapter(),
+    'windows_open_url': WindowsOpenUrlAdapter(),
     'alexa': AlexaTriggerAdapter(),
   };
 
@@ -68,6 +76,8 @@ class AppState extends ChangeNotifier {
       adapters['windows_brightness'] as WindowsBrightnessAdapter;
   WindowsVolumeAdapter get windowsVolumeAdapter =>
       adapters['windows_volume'] as WindowsVolumeAdapter;
+  WindowsOpenUrlAdapter get windowsOpenUrlAdapter =>
+      adapters['windows_open_url'] as WindowsOpenUrlAdapter;
   AlexaTriggerAdapter get alexaAdapter => adapters['alexa'] as AlexaTriggerAdapter;
 
   /// A date string per mode id — guards a scheduled mode from re-firing
@@ -76,10 +86,15 @@ class AppState extends ChangeNotifier {
   /// schedule once more that day, which is a fine trade for the simplicity.
   final Map<String, String> _scheduledFiredToday = {};
 
+  /// Same guard, for learned time-of-day launches (see `_checkTimeLaunches`)
+  /// — keyed by "weekday|bucket" instead of mode id.
+  final Map<String, String> _timeLaunchFiredToday = {};
+
   PreferenceProfile? _preference;
   List<Mode> _modes = Mode.builtIns();
   PersonalizationModel? _model;
   RoutineLearner _routines = RoutineLearner();
+  LaunchLearner _launches = LaunchLearner();
   ContextSnapshot _context = ContextSnapshot.initial;
   String? _currentModeId;
   ModeDecision? _decision;
@@ -97,6 +112,7 @@ class AppState extends ChangeNotifier {
   List<Mode> get modes => List.unmodifiable(_modes);
   PersonalizationModel? get model => _model;
   RoutineLearner get routines => _routines;
+  LaunchLearner get launches => _launches;
   ContextSnapshot get sensorContext => _context;
   ModeDecision? get decision => _decision;
   PendingTransition? get pendingTransition => _pendingTransition;
@@ -140,6 +156,7 @@ class AppState extends ChangeNotifier {
     _modes = await _modeStore.load();
     _model = await _profileStore.loadModel() ?? PersonalizationModel.seed(_modes);
     _routines = await _routineStore.load();
+    _launches = await _launchStore.load();
     _currentModeId = await _profileStore.loadCurrentModeId();
     _currentModeId ??= _modes.isNotEmpty ? _modes.first.id : null;
     _tasks = await _taskStore.load();
@@ -365,6 +382,67 @@ class AppState extends ChangeNotifier {
     if (env.alexaSceneId != null) {
       await alexaAdapter.fire(env.alexaSceneId!);
     }
+    if (env.openUrl != null) {
+      await windowsOpenUrlAdapter.fire(env.openUrl!);
+      await _recordLaunchObservation(mode.id, env.openUrl!);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Launch learning — what actually gets opened, per mode and per time of
+  // day (see `LaunchLearner`). Firing a mode's *configured* default (above)
+  // counts as an observation too, same as any other; this is also where a
+  // manually-logged "I actually opened something else" feeds in, and
+  // where it gets promoted into the mode's new default once confident.
+  // ---------------------------------------------------------------------
+
+  Future<void> _recordLaunchObservation(String modeId, String target) async {
+    final trimmed = target.trim();
+    if (trimmed.isEmpty) return;
+    _launches.recordModeLaunch(modeId, trimmed);
+    _launches.recordTimeLaunch(effectiveNow, trimmed);
+    await _launchStore.save(_launches);
+  }
+
+  /// "If a particular website is opened [for a mode], set it as default
+  /// and open it." The user tells DayOne what they actually opened while
+  /// in `modeId` — this logs it, and if the same target has now been seen
+  /// `LaunchLearner.confidenceThreshold`+ times for this mode (and isn't
+  /// already the configured default), that mode's `environment.openUrl`
+  /// is updated to match and saved — the learned default takes over from
+  /// here on, no manual edit needed. Also opens it immediately, same as
+  /// the spec asks.
+  Future<void> recordLaunch({required String modeId, required String target}) async {
+    final trimmed = target.trim();
+    if (trimmed.isEmpty) return;
+
+    await _recordLaunchObservation(modeId, trimmed);
+
+    final learned = _launches.learnedForMode(modeId);
+    if (learned != null) {
+      final index = _modes.indexWhere((m) => m.id == modeId);
+      if (index != -1 && _modes[index].environment?.openUrl != learned.target) {
+        final mode = _modes[index];
+        mode.environment = (mode.environment ?? const EnvironmentProfile()).copyWith(
+          openUrl: learned.target,
+        );
+        await updateMode(mode);
+      }
+    }
+
+    await windowsOpenUrlAdapter.fire(trimmed);
+    notifyListeners();
+  }
+
+  /// The time-of-day counterpart, independent of any mode — "around
+  /// 6:00pm I open Spotify" — logged directly rather than inferred from a
+  /// mode firing. Feeds `_checkTimeLaunches` below.
+  Future<void> logTimedLaunch(String target) async {
+    final trimmed = target.trim();
+    if (trimmed.isEmpty) return;
+    _launches.recordTimeLaunch(effectiveNow, trimmed);
+    await _launchStore.save(_launches);
+    notifyListeners();
   }
 
   // ---------------------------------------------------------------------
@@ -450,6 +528,7 @@ class AppState extends ChangeNotifier {
     if (_preference == null || _currentModeId == null) return;
     final now = effectiveNow;
     _checkScheduledModes(now);
+    _checkTimeLaunches(now);
 
     final due = _routines.dueRoutine(now, _currentModeId!);
     if (due == null) return;
@@ -458,6 +537,20 @@ class AppState extends ChangeNotifier {
       "You're usually in ${_labelFor(due.modeId)} around "
       '${due.timeLabel} on ${due.weekdayLabel}s',
     );
+  }
+
+  /// "If at a particular time the same [thing] is used every day, open
+  /// that when the time comes" — independent of mode. Fires at most once
+  /// per (weekday, 30-minute bucket) per day, same guard pattern as
+  /// `_checkScheduledModes`.
+  Future<void> _checkTimeLaunches(DateTime now) async {
+    final due = _launches.dueTimeLaunch(now);
+    if (due == null) return;
+    final todayKey = '${now.year}-${now.month}-${now.day}';
+    final fireKey = '${due.weekday}|${due.bucket}';
+    if (_timeLaunchFiredToday[fireKey] == todayKey) return;
+    _timeLaunchFiredToday[fireKey] = todayKey;
+    await windowsOpenUrlAdapter.fire(due.target);
   }
 
   /// The deterministic counterpart to learned routines: a mode with
@@ -501,6 +594,7 @@ class AppState extends ChangeNotifier {
     await _profileStore.deleteAll();
     await _modeStore.deleteAll();
     await _routineStore.deleteAll();
+    await _launchStore.deleteAll();
     await NotificationService.instance.cancelPendingNotification();
     mockAdapter.log.clear();
 
@@ -508,6 +602,8 @@ class AppState extends ChangeNotifier {
     _modes = Mode.builtIns();
     _model = null;
     _routines = RoutineLearner();
+    _launches = LaunchLearner();
+    _timeLaunchFiredToday.clear();
     _context = ContextSnapshot.initial;
     _currentModeId = _modes.first.id;
     _decision = null;

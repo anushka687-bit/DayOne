@@ -159,6 +159,18 @@ class Mode {
             alexaSceneId: 'dayone_relax',
           ),
         ),
+        Mode(
+          id: 'study',
+          label: 'Study Mode',
+          tagline: 'Heads-down study — VTOP opens automatically.',
+          layout: LayoutArchetype.guided,
+          builtIn: true,
+          environment: const EnvironmentProfile(
+            brightness: 90,
+            volume: 20,
+            openUrl: 'https://vtop.vit.ac.in/vtop/open/page',
+          ),
+        ),
       ];
 }
 

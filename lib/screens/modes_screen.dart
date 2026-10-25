@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../engine/launch_learner.dart';
 import '../models/environment_profile.dart';
 import '../models/mode.dart';
 import '../theme/app_theme.dart';
@@ -72,8 +73,21 @@ class ModesScreen extends StatelessWidget {
                               'volume ${mode.environment!.volume}%',
                             if (mode.environment!.alexaSceneId != null)
                               'Alexa "${mode.environment!.alexaSceneId}"',
+                            if (mode.environment!.openUrl != null)
+                              'opens ${mode.environment!.openUrl}',
                           ].join(' · '),
                           style: const TextStyle(color: AppColors.accent, fontSize: 11),
+                        ),
+                      ),
+                    if (_learnedButNotYetDefault(state, mode) != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'Learning: you\'ve opened '
+                          '"${_learnedButNotYetDefault(state, mode)!.target}" here '
+                          '${_learnedButNotYetDefault(state, mode)!.confidence} times — '
+                          'a couple more and it becomes the default.',
+                          style: const TextStyle(color: AppColors.inkSoft, fontSize: 11, fontStyle: FontStyle.italic),
                         ),
                       ),
                   ],
@@ -82,10 +96,12 @@ class ModesScreen extends StatelessWidget {
               trailing: PopupMenuButton<String>(
                 onSelected: (value) {
                   if (value == 'edit') _openEditor(context, existing: mode);
+                  if (value == 'log') _logLaunch(context, mode);
                   if (value == 'delete') state.removeMode(mode.id);
                 },
                 itemBuilder: (context) => [
                   const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                  const PopupMenuItem(value: 'log', child: Text('Log what I opened')),
                   if (!mode.builtIn) const PopupMenuItem(value: 'delete', child: Text('Delete')),
                 ],
               ),
@@ -106,6 +122,49 @@ class ModesScreen extends StatelessWidget {
       ),
       builder: (_) => _ModeEditorSheet(existing: existing),
     );
+  }
+
+  /// The top thing observed opening in this mode, if it hasn't already
+  /// become the configured default and isn't confident enough yet to have
+  /// been promoted automatically — purely a "here's what DayOne's
+  /// noticing" progress indicator.
+  LearnedModeLaunch? _learnedButNotYetDefault(AppState state, Mode mode) {
+    final top = state.launches.topObservationForMode(mode.id);
+    if (top == null) return null;
+    if (top.target == mode.environment?.openUrl) return null;
+    if (top.confidence >= LaunchLearner.confidenceThreshold) return null;
+    return top;
+  }
+
+  Future<void> _logLaunch(BuildContext context, Mode mode) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('What did you open in ${mode.label}?'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+            labelText: 'Website, app name, or protocol',
+            hintText: 'e.g. https://vtop.vit.ac.in/vtop/open/page or spotify:',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: const Text('Log it'),
+          ),
+        ],
+      ),
+    );
+    if (result == null || result.isEmpty || !context.mounted) return;
+    await context.read<AppState>().recordLaunch(modeId: mode.id, target: result);
   }
 }
 
@@ -154,6 +213,8 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
   bool _volumeEnabled = false;
   double _volumePercent = 50;
   bool _alexaEnabled = false;
+  bool _openUrlEnabled = false;
+  late TextEditingController _openUrl;
 
   static const _adapterChoices = {
     'mock': 'Simulated smart-home link',
@@ -178,6 +239,8 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
     _volumePercent = (env?.volume ?? 50).toDouble();
     _alexaEnabled = env?.alexaSceneId != null;
     _alexaEventName = TextEditingController(text: env?.alexaSceneId ?? '');
+    _openUrlEnabled = env?.openUrl != null;
+    _openUrl = TextEditingController(text: env?.openUrl ?? '');
 
     final firstTrigger = (m?.sceneTriggers.isNotEmpty ?? false) ? m!.sceneTriggers.first : null;
     _adapterId = 'mock';
@@ -326,6 +389,23 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
                 controller: _alexaEventName,
                 decoration: const InputDecoration(labelText: 'IFTTT event name'),
               ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Open a website'),
+              subtitle: const Text('Opens in this laptop\'s default browser',
+                  style: TextStyle(fontSize: 11)),
+              value: _openUrlEnabled,
+              onChanged: (v) => setState(() => _openUrlEnabled = v),
+            ),
+            if (_openUrlEnabled)
+              TextField(
+                controller: _openUrl,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'URL',
+                  hintText: 'https://vtop.vit.ac.in/vtop/open/page',
+                ),
+              ),
             const SizedBox(height: 20),
             const Text('Smart-home scene (optional)',
                 style: TextStyle(fontWeight: FontWeight.w600)),
@@ -385,6 +465,9 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
       volume: _volumeEnabled ? _volumePercent.round() : null,
       alexaSceneId: _alexaEnabled && _alexaEventName.text.trim().isNotEmpty
           ? _alexaEventName.text.trim()
+          : null,
+      openUrl: _openUrlEnabled && _openUrl.text.trim().isNotEmpty
+          ? _openUrl.text.trim()
           : null,
     );
 

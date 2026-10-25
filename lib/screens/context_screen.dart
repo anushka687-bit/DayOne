@@ -3,13 +3,15 @@ import 'package:provider/provider.dart';
 
 import '../app_state.dart';
 import '../models/context_snapshot.dart';
+import '../services/esp32_context_service.dart';
 import '../theme/app_theme.dart';
 import 'routines_screen.dart';
 
 /// Stands in for the ESP32 + BH1750 + MPU6050 + sound sensor during
-/// development and demo. Swapping this for real Bluetooth sensor data later
-/// means replacing what calls `updateContext` — nothing downstream (the
-/// engine, the dashboard) needs to change.
+/// development and demo — and, now that firmware/dayone_esp32 exists, can
+/// also pull real readings from it over the ESP32's own WiFi access point.
+/// Either way it calls `updateContext`; nothing downstream (the engine, the
+/// dashboard) needs to know or care which source it was.
 ///
 /// Also where the *routine* side of the demo lives: a "simulate a moment"
 /// control, since waiting for 6:00pm to actually arrive isn't practical
@@ -25,6 +27,10 @@ class _ContextScreenState extends State<ContextScreen> {
   late double _noise;
   late double _movement;
   late double _light;
+
+  final Esp32ContextService _esp32 = Esp32ContextService();
+  bool _liveSensors = false;
+  String? _liveError;
 
   static const _presets = [
     ('Early morning', 6, 0),
@@ -44,10 +50,44 @@ class _ContextScreenState extends State<ContextScreen> {
     _light = c.light;
   }
 
+  @override
+  void dispose() {
+    _esp32.dispose();
+    super.dispose();
+  }
+
   void _push() {
     context.read<AppState>().updateContext(
           ContextSnapshot(noise: _noise, movement: _movement, light: _light),
         );
+  }
+
+  void _toggleLiveSensors(bool on) {
+    setState(() {
+      _liveSensors = on;
+      _liveError = null;
+    });
+    if (on) {
+      _esp32.start(
+        onUpdate: (snapshot) {
+          if (!mounted) return;
+          setState(() {
+            _noise = snapshot.noise;
+            _movement = snapshot.movement;
+            _light = snapshot.light;
+            _liveError = null;
+          });
+          _push();
+        },
+        onError: (e) {
+          if (!mounted) return;
+          setState(() => _liveError = 'Not reachable — connect this phone '
+              'to the "DayOne-ESP32" WiFi network.');
+        },
+      );
+    } else {
+      _esp32.stop();
+    }
   }
 
   @override
@@ -73,6 +113,37 @@ class _ContextScreenState extends State<ContextScreen> {
         padding: const EdgeInsets.all(24),
         children: [
           const Text(
+            'LIVE SENSORS (ESP32)',
+            style: TextStyle(
+              fontFamily: 'monospace',
+              letterSpacing: 2,
+              color: AppColors.accent,
+              fontWeight: FontWeight.w600,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _liveSensors,
+            onChanged: _toggleLiveSensors,
+            activeColor: AppColors.accent,
+            title: const Text('Pull readings from the ESP32',
+                style: TextStyle(color: AppColors.ink)),
+            subtitle: Text(
+              _liveSensors
+                  ? (_liveError ??
+                      'Polling http://192.168.4.1/context — sliders below '
+                          'now mirror the hardware.')
+                  : 'Off — use the sliders below to simulate context.',
+              style: TextStyle(
+                color: _liveError != null ? Colors.redAccent : AppColors.inkSoft,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Text(
             'SIMULATED SENSOR LAYER',
             style: TextStyle(
               fontFamily: 'monospace',
@@ -95,6 +166,7 @@ class _ContextScreenState extends State<ContextScreen> {
             value: _noise,
             lowLabel: 'Quiet',
             highLabel: 'Loud',
+            enabled: !_liveSensors,
             onChanged: (v) {
               setState(() => _noise = v);
               _push();
@@ -106,6 +178,7 @@ class _ContextScreenState extends State<ContextScreen> {
             value: _movement,
             lowLabel: 'Still',
             highLabel: 'Active',
+            enabled: !_liveSensors,
             onChanged: (v) {
               setState(() => _movement = v);
               _push();
@@ -117,6 +190,7 @@ class _ContextScreenState extends State<ContextScreen> {
             value: _light,
             lowLabel: 'Dim',
             highLabel: 'Bright',
+            enabled: !_liveSensors,
             onChanged: (v) {
               setState(() => _light = v);
               _push();
@@ -209,6 +283,7 @@ class _SensorSlider extends StatelessWidget {
   final double value;
   final String lowLabel;
   final String highLabel;
+  final bool enabled;
   final ValueChanged<double> onChanged;
 
   const _SensorSlider({
@@ -217,36 +292,40 @@ class _SensorSlider extends StatelessWidget {
     required this.value,
     required this.lowLabel,
     required this.highLabel,
+    this.enabled = true,
     required this.onChanged,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, color: AppColors.ink, size: 20),
-              const SizedBox(width: 8),
-              Text(label,
-                  style: const TextStyle(fontWeight: FontWeight.w600, color: AppColors.ink)),
-              const Spacer(),
-              Text('${(value * 100).round()}%',
-                  style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.w600)),
-            ],
-          ),
-          Slider(value: value, onChanged: onChanged),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(lowLabel, style: const TextStyle(fontSize: 12, color: AppColors.inkSoft)),
-              Text(highLabel, style: const TextStyle(fontSize: 12, color: AppColors.inkSoft)),
-            ],
-          ),
-        ],
+    return Opacity(
+      opacity: enabled ? 1.0 : 0.5,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: AppColors.ink, size: 20),
+                const SizedBox(width: 8),
+                Text(label,
+                    style: const TextStyle(fontWeight: FontWeight.w600, color: AppColors.ink)),
+                const Spacer(),
+                Text('${(value * 100).round()}%',
+                    style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.w600)),
+              ],
+            ),
+            Slider(value: value, onChanged: enabled ? onChanged : null),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(lowLabel, style: const TextStyle(fontSize: 12, color: AppColors.inkSoft)),
+                Text(highLabel, style: const TextStyle(fontSize: 12, color: AppColors.inkSoft)),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
