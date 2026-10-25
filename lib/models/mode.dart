@@ -205,6 +205,23 @@ class Mode {
           builtIn: true,
           adaptsBrightness: true,
         ),
+        // AI Mode is the one mode that reaches off-device on purpose — see
+        // `ClaudeService`. Everywhere else "AI" means the on-device scoring/
+        // learning engine; this is the deliberate, clearly-separated
+        // exception, for when the user wants a real, descriptive answer
+        // from Claude, written in the style their own onboarding answers
+        // already describe (see `AppState.askAi`).
+        Mode(
+          id: 'ai',
+          label: 'AI Mode',
+          tagline: 'Ask DayOne’s AI to explain anything — written the way you like it.',
+          layout: LayoutArchetype.guided,
+          builtIn: true,
+          environment: const EnvironmentProfile(
+            brightness: 70,
+            volume: 30,
+          ),
+        ),
       ];
 }
 

@@ -153,6 +153,32 @@ class PrivacyScreen extends StatelessWidget {
               ),
             );
           }),
+          const SizedBox(height: 28),
+          const Text(
+            'AI MODE',
+            style: TextStyle(
+              fontFamily: 'monospace',
+              letterSpacing: 1.5,
+              color: AppColors.accent,
+              fontWeight: FontWeight.w600,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            state.claudeSettings.hasKey
+                ? 'A Claude API key is saved on this device. AI Mode is the one '
+                    'exception to "nothing leaves the device": whatever you type '
+                    'there, plus a short style instruction built from your '
+                    'onboarding answers, is sent to Anthropic\'s API to get an '
+                    'answer. Nothing else — no sensor data, no learned model — '
+                    'is ever included.'
+                : 'No Claude API key saved — AI Mode is off. If you add one, '
+                    'only what you type there (plus a short style instruction '
+                    'from your onboarding answers) is ever sent to Anthropic\'s '
+                    'API — nothing else leaves this device.',
+            style: const TextStyle(color: AppColors.inkSoft, fontSize: 13, height: 1.4),
+          ),
           const SizedBox(height: 32),
           OutlinedButton.icon(
             onPressed: profile == null ? null : () => _confirmDelete(context),

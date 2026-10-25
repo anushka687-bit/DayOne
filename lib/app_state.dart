@@ -13,14 +13,17 @@ import 'engine/windows_brightness_adapter.dart';
 import 'engine/windows_open_url_adapter.dart';
 import 'engine/windows_volume_adapter.dart';
 import 'models/ai_tutor_settings.dart';
+import 'models/claude_settings.dart';
 import 'models/context_snapshot.dart';
 import 'models/environment_profile.dart';
 import 'models/mode.dart';
 import 'models/pending_transition.dart';
 import 'models/preference_profile.dart';
 import 'models/task_item.dart';
+import 'services/claude_service.dart';
 import 'services/notification_service.dart';
 import 'storage/ai_tutor_store.dart';
+import 'storage/claude_settings_store.dart';
 import 'storage/launch_store.dart';
 import 'storage/mode_store.dart';
 import 'storage/profile_store.dart';
@@ -47,23 +50,29 @@ class AppState extends ChangeNotifier {
     RoutineStore? routineStore,
     LaunchStore? launchStore,
     AiTutorStore? aiTutorStore,
+    ClaudeSettingsStore? claudeSettingsStore,
     TaskStore? taskStore,
     PersonalizationEngine? engine,
+    ClaudeService? claudeService,
   })  : _profileStore = profileStore ?? ProfileStore(),
         _modeStore = modeStore ?? ModeStore(),
         _routineStore = routineStore ?? RoutineStore(),
         _launchStore = launchStore ?? LaunchStore(),
         _aiTutorStore = aiTutorStore ?? AiTutorStore(),
+        _claudeSettingsStore = claudeSettingsStore ?? ClaudeSettingsStore(),
         _taskStore = taskStore ?? TaskStore(),
-        _engine = engine ?? PersonalizationEngine();
+        _engine = engine ?? PersonalizationEngine(),
+        _claudeService = claudeService ?? ClaudeService();
 
   final ProfileStore _profileStore;
   final ModeStore _modeStore;
   final RoutineStore _routineStore;
   final LaunchStore _launchStore;
   final AiTutorStore _aiTutorStore;
+  final ClaudeSettingsStore _claudeSettingsStore;
   final TaskStore _taskStore;
   final PersonalizationEngine _engine;
+  final ClaudeService _claudeService;
 
   /// Registered trigger adapters, by id. Only the mock/demo adapter ships
   /// in this build — see `MockTriggerAdapter` for how a real one (a
@@ -101,6 +110,7 @@ class AppState extends ChangeNotifier {
   RoutineLearner _routines = RoutineLearner();
   LaunchLearner _launches = LaunchLearner();
   AiTutorSettings _aiTutor = AiTutorSettings.initial;
+  ClaudeSettings _claudeSettings = ClaudeSettings.initial;
   ContextSnapshot _context = ContextSnapshot.initial;
   String? _currentModeId;
   ModeDecision? _decision;
@@ -126,6 +136,54 @@ class AppState extends ChangeNotifier {
     await _aiTutorStore.save(_aiTutor);
     notifyListeners();
   }
+
+  ClaudeSettings get claudeSettings => _claudeSettings;
+
+  Future<void> updateClaudeSettings(ClaudeSettings settings) async {
+    _claudeSettings = settings;
+    await _claudeSettingsStore.save(_claudeSettings);
+    notifyListeners();
+  }
+
+  /// AI Mode's one job: take whatever the user typed in [topic] and ask
+  /// Claude to explain it — written the way THIS user already said they
+  /// like things explained. The "style" half of the prompt is never typed
+  /// fresh; it's assembled from data DayOne already collected:
+  ///   - `PreferenceProfile` (the onboarding sliders — concise vs detailed,
+  ///     visual vs plain, guided vs exploratory), and
+  ///   - `AiTutorSettings.promptTemplate` (the same global "explain it like
+  ///     I'm 5" style line Study Mode already uses to open ChatGPT).
+  /// This is the one place in DayOne that reaches a real cloud AI — see
+  /// `ClaudeService` — kept behind its own mode, its own API key, and its
+  /// own method, so that stays obvious rather than quietly bolted onto the
+  /// on-device engine everything else here uses.
+  Future<String> askAi(String topic) async {
+    final stylePrompt = _buildAiStylePrompt();
+    return _claudeService.explain(
+      apiKey: _claudeSettings.apiKey,
+      topic: topic,
+      stylePrompt: stylePrompt,
+    );
+  }
+
+  String _buildAiStylePrompt() {
+    final parts = <String>[_aiTutor.promptTemplate];
+    final p = _preference;
+    if (p != null) {
+      parts.add(p.conciseness > 0.5
+          ? 'Keep the answer concise — the short version, not the long one.'
+          : 'Go into real detail rather than keeping it short.');
+      parts.add(p.visual > 0.5
+          ? 'Lean on vivid, descriptive, visual writing — paint the idea in words, '
+              'describe diagrams/flows even though you can only write text.'
+          : 'Plain written explanation is fine — no need to over-describe visuals.');
+      parts.add(p.guided > 0.5
+          ? 'Walk through it step-by-step, guided, in order.'
+          : 'A clear overview is enough — no need to hand-hold through every step.');
+    }
+    return parts.join(' ');
+  }
+
   ContextSnapshot get sensorContext => _context;
   ModeDecision? get decision => _decision;
   PendingTransition? get pendingTransition => _pendingTransition;
@@ -171,6 +229,7 @@ class AppState extends ChangeNotifier {
     _routines = await _routineStore.load();
     _launches = await _launchStore.load();
     _aiTutor = await _aiTutorStore.load();
+    _claudeSettings = await _claudeSettingsStore.load();
     _currentModeId = await _profileStore.loadCurrentModeId();
     _currentModeId ??= _modes.isNotEmpty ? _modes.first.id : null;
     _tasks = await _taskStore.load();
@@ -664,6 +723,7 @@ class AppState extends ChangeNotifier {
     await _routineStore.deleteAll();
     await _launchStore.deleteAll();
     await _aiTutorStore.deleteAll();
+    await _claudeSettingsStore.deleteAll();
     await NotificationService.instance.cancelPendingNotification();
     mockAdapter.log.clear();
 
@@ -673,6 +733,7 @@ class AppState extends ChangeNotifier {
     _routines = RoutineLearner();
     _launches = LaunchLearner();
     _aiTutor = AiTutorSettings.initial;
+    _claudeSettings = ClaudeSettings.initial;
     _timeLaunchFiredToday.clear();
     _context = ContextSnapshot.initial;
     _currentModeId = _modes.first.id;

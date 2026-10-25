@@ -4,9 +4,10 @@
  * Reads the four sensors that are wired now, turns them into the
  * same 0..1 shape the Flutter app's ContextSnapshot expects (light, noise,
  * movement), and serves them as JSON over a small HTTP endpoint so the
- * phone can poll it. The ESP32 runs as its own WiFi access point, so there
- * is no dependency on venue WiFi during a demo — the phone connects
- * directly to it.
+ * phone can poll it. The ESP32 joins your iPhone's Personal Hotspot as a
+ * WiFi client — make sure Personal Hotspot is ON before the ESP32 boots.
+ * Reachable at http://dayone.local/context via mDNS (no need to track the
+ * DHCP-assigned IP, which can change).
  *
  * Pin map (matches the wiring diagram):
  *   LDR module AO        -> GPIO34 (ADC1_CH6)
@@ -23,7 +24,7 @@
  *   "Adafruit Unified Sensor" and "Adafruit BusIO" automatically)
  *
  * Endpoint:
- *   GET http://192.168.4.1/context
+ *   GET http://dayone.local/context   (or the IP printed over Serial)
  *   -> {"light":0.00-1.00,"noise":0.00-1.00,"movement":0.00-1.00}
  */
 
@@ -32,10 +33,20 @@
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
+#include <ESPmDNS.h>
 
-// ---------- WiFi AP config ----------
-const char *AP_SSID = "DayOne-ESP32";
-const char *AP_PASSWORD = "dayone123"; // must be 8+ chars for WPA2
+// ---------- WiFi station config ----------
+// The ESP32 now joins your iPhone's Personal Hotspot as a client, instead
+// of creating its own network. Make sure Personal Hotspot is turned ON
+// before the ESP32 boots.
+const char *WIFI_SSID = "Anushka's iPhone";
+const char *WIFI_PASSWORD = "Anushka_Gupta__007";
+
+// mDNS name — once connected, reach the sensor endpoint at
+// http://dayone.local/context instead of hunting for the DHCP-assigned IP
+// (which can change every time the hotspot reconnects).
+const char *MDNS_NAME = "dayone";
+
 WebServer server(80);
 
 // ---------- Pins ----------
@@ -207,13 +218,38 @@ void setup() {
     Serial.println("MPU6050 NOT found — falling back to ultrasonic movement proxy.");
   }
 
-  WiFi.softAP(AP_SSID, AP_PASSWORD);
-  IPAddress ip = WiFi.softAPIP();
-  Serial.print("DayOne AP up. Connect phone to \"");
-  Serial.print(AP_SSID);
-  Serial.print("\", then GET http://");
-  Serial.print(ip);
-  Serial.println("/context");
+  // ---- Join the iPhone hotspot as a WiFi station ----
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to \"");
+  Serial.print(WIFI_SSID);
+  Serial.print("\"");
+
+  unsigned long wifiStartAt = millis();
+  const unsigned long WIFI_TIMEOUT_MS = 20000; // 20s before giving up and retrying later
+  while (WiFi.status() != WL_CONNECTED && millis() - wifiStartAt < WIFI_TIMEOUT_MS) {
+    delay(300);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    IPAddress ip = WiFi.localIP();
+    Serial.print("Connected! IP address: ");
+    Serial.println(ip);
+
+    if (MDNS.begin(MDNS_NAME)) {
+      MDNS.addService("http", "tcp", 80);
+      Serial.print("mDNS ready -> GET http://");
+      Serial.print(MDNS_NAME);
+      Serial.println(".local/context");
+    } else {
+      Serial.println("mDNS setup failed — use the IP address above instead.");
+    }
+  } else {
+    Serial.println("WiFi connect timed out. Will keep retrying in the background.");
+    Serial.println("Check: is Personal Hotspot turned ON, and is the password correct?");
+  }
 
   server.on("/", handleRoot);
   server.on("/context", handleContext);
@@ -221,6 +257,20 @@ void setup() {
 }
 
 void loop() {
+  // If the hotspot connection drops (phone locked, out of range, hotspot
+  // toggled off), keep retrying every 10s instead of silently going dead.
+  static unsigned long gLastReconnectAttempt = 0;
+  if (WiFi.status() != WL_CONNECTED) {
+    unsigned long now = millis();
+    if (now - gLastReconnectAttempt > 10000) {
+      gLastReconnectAttempt = now;
+      Serial.println("WiFi not connected — retrying...");
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    }
+    return; // skip serving/sampling while disconnected
+  }
+
   server.handleClient();
 
   unsigned long now = millis();

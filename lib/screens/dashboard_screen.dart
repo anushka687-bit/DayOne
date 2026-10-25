@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../models/claude_settings.dart';
 import '../models/environment_profile.dart';
 import '../models/mode.dart';
 import '../models/pending_transition.dart';
@@ -415,7 +416,6 @@ class _ModeBanner extends StatelessWidget {
           ],
         ),
       ),
-      ),
     );
   }
 }
@@ -489,6 +489,10 @@ class _ModeContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // AI Mode is dispatched on identity, not layout — same special-case
+    // pattern as Study Mode's `aiTutorEnabled` side-effect, just with its
+    // own full panel instead of a background URL launch. See `AppState.askAi`.
+    if (mode.id == 'ai') return const _AiModeLayout();
     switch (mode.layout) {
       case LayoutArchetype.quick:
         return const _QuickLayout();
@@ -499,6 +503,203 @@ class _ModeContent extends StatelessWidget {
       case LayoutArchetype.minimal:
         return const _MinimalLayout();
     }
+  }
+}
+
+/// AI MODE — the one mode that asks a real cloud AI something, instead of
+/// just reflecting local state. Builds its "explain it my way" instruction
+/// from the user's own onboarding answers (see `AppState.askAi`), so two
+/// different users typing the exact same question here get differently
+/// written answers — one maybe concise and plain, another detailed and
+/// descriptive — without either of them having to say so again.
+class _AiModeLayout extends StatefulWidget {
+  const _AiModeLayout();
+
+  @override
+  State<_AiModeLayout> createState() => _AiModeLayoutState();
+}
+
+class _AiModeLayoutState extends State<_AiModeLayout> {
+  final _controller = TextEditingController();
+  bool _loading = false;
+  String? _answer;
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _ask(AppState state) async {
+    final topic = _controller.text.trim();
+    if (topic.isEmpty) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+      _answer = null;
+    });
+    try {
+      final result = await state.askAi(topic);
+      if (!mounted) return;
+      setState(() => _answer = result);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  String _stylePreview(AppState state) {
+    final p = state.preference;
+    if (p == null) return 'default style';
+    final bits = <String>[
+      p.conciseness > 0.5 ? 'concise' : 'detailed',
+      p.visual > 0.5 ? 'visual' : 'plain',
+      p.guided > 0.5 ? 'step-by-step' : 'exploratory',
+    ];
+    return bits.join(', ');
+  }
+
+  void _promptApiKey(BuildContext context, AppState state) {
+    final keyController = TextEditingController(text: state.claudeSettings.apiKey);
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.only(
+          left: 24,
+          right: 24,
+          top: 20,
+          bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Claude API key',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppColors.ink)),
+            const SizedBox(height: 6),
+            const Text(
+              'Stored only on this device — never bundled into the app, never '
+              'sent anywhere except straight to Anthropic’s API.',
+              style: TextStyle(color: AppColors.inkSoft, fontSize: 12, height: 1.4),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: keyController,
+              obscureText: true,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'sk-ant-...'),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () {
+                  state.updateClaudeSettings(ClaudeSettings(apiKey: keyController.text.trim()));
+                  Navigator.of(sheetContext).pop();
+                },
+                child: const Text('Save'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final hasKey = state.claudeSettings.hasKey;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Ask DayOne's AI",
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 6),
+                Text(
+                  'Explained your way — built from your onboarding preferences '
+                  '(${_stylePreview(state)}), sent to Claude as a system prompt.',
+                  style: const TextStyle(color: AppColors.inkSoft, fontSize: 12, height: 1.4),
+                ),
+                const SizedBox(height: 16),
+                if (!hasKey) ...[
+                  const Text(
+                    'Add your Claude API key to turn this on.',
+                    style: TextStyle(color: AppColors.inkSoft),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton(
+                    onPressed: () => _promptApiKey(context, state),
+                    child: const Text('Add API key'),
+                  ),
+                ] else ...[
+                  TextField(
+                    controller: _controller,
+                    minLines: 1,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'What do you want explained?',
+                      hintText: 'e.g. how does a TCP handshake work?',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      ElevatedButton(
+                        onPressed: _loading ? null : () => _ask(state),
+                        child: _loading
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Text('Explain this'),
+                      ),
+                      const SizedBox(width: 10),
+                      TextButton(
+                        onPressed: () => _promptApiKey(context, state),
+                        child: const Text('Change key'),
+                      ),
+                    ],
+                  ),
+                ],
+                if (_error != null) ...[
+                  const SizedBox(height: 14),
+                  Text(_error!, style: const TextStyle(color: Colors.red)),
+                ],
+              ],
+            ),
+          ),
+        ),
+        if (_answer != null) ...[
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: SelectableText(
+                _answer!,
+                style: const TextStyle(color: AppColors.ink, height: 1.5),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 }
 
