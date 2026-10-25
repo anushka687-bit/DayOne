@@ -21,10 +21,27 @@ class EnvironmentProfile {
   /// Mode opening VTOP automatically instead of the user doing it by hand.
   final String? openUrl;
 
-  const EnvironmentProfile({this.brightness, this.volume, this.alexaSceneId, this.openUrl});
+  /// If true, also opens ChatGPT (pre-filled with the one global
+  /// explanation-style prompt — see `AiTutorSettings`) the moment this
+  /// mode becomes active. A second, independent "open" alongside
+  /// `openUrl`, not a replacement for it — Study Mode uses both: VTOP and
+  /// the AI study buddy.
+  final bool aiTutorEnabled;
+
+  const EnvironmentProfile({
+    this.brightness,
+    this.volume,
+    this.alexaSceneId,
+    this.openUrl,
+    this.aiTutorEnabled = false,
+  });
 
   bool get isEmpty =>
-      brightness == null && volume == null && alexaSceneId == null && openUrl == null;
+      brightness == null &&
+      volume == null &&
+      alexaSceneId == null &&
+      openUrl == null &&
+      !aiTutorEnabled;
 
   /// Used by the launch learner to swap in a newly-learned `openUrl`
   /// without disturbing brightness/volume/Alexa. Pass `clearOpenUrl: true`
@@ -35,12 +52,14 @@ class EnvironmentProfile {
     String? alexaSceneId,
     String? openUrl,
     bool clearOpenUrl = false,
+    bool? aiTutorEnabled,
   }) {
     return EnvironmentProfile(
       brightness: brightness ?? this.brightness,
       volume: volume ?? this.volume,
       alexaSceneId: alexaSceneId ?? this.alexaSceneId,
       openUrl: clearOpenUrl ? null : (openUrl ?? this.openUrl),
+      aiTutorEnabled: aiTutorEnabled ?? this.aiTutorEnabled,
     );
   }
 
@@ -49,6 +68,7 @@ class EnvironmentProfile {
         'volume': volume,
         'alexaSceneId': alexaSceneId,
         'openUrl': openUrl,
+        'aiTutorEnabled': aiTutorEnabled,
       };
 
   factory EnvironmentProfile.fromJson(Map<String, dynamic> json) => EnvironmentProfile(
@@ -56,5 +76,6 @@ class EnvironmentProfile {
         volume: json['volume'] as int?,
         alexaSceneId: json['alexaSceneId'] as String?,
         openUrl: json['openUrl'] as String?,
+        aiTutorEnabled: json['aiTutorEnabled'] as bool? ?? false,
       );
 }

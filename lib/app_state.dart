@@ -12,6 +12,7 @@ import 'engine/trigger_adapter.dart';
 import 'engine/windows_brightness_adapter.dart';
 import 'engine/windows_open_url_adapter.dart';
 import 'engine/windows_volume_adapter.dart';
+import 'models/ai_tutor_settings.dart';
 import 'models/context_snapshot.dart';
 import 'models/environment_profile.dart';
 import 'models/mode.dart';
@@ -19,6 +20,7 @@ import 'models/pending_transition.dart';
 import 'models/preference_profile.dart';
 import 'models/task_item.dart';
 import 'services/notification_service.dart';
+import 'storage/ai_tutor_store.dart';
 import 'storage/launch_store.dart';
 import 'storage/mode_store.dart';
 import 'storage/profile_store.dart';
@@ -44,12 +46,14 @@ class AppState extends ChangeNotifier {
     ModeStore? modeStore,
     RoutineStore? routineStore,
     LaunchStore? launchStore,
+    AiTutorStore? aiTutorStore,
     TaskStore? taskStore,
     PersonalizationEngine? engine,
   })  : _profileStore = profileStore ?? ProfileStore(),
         _modeStore = modeStore ?? ModeStore(),
         _routineStore = routineStore ?? RoutineStore(),
         _launchStore = launchStore ?? LaunchStore(),
+        _aiTutorStore = aiTutorStore ?? AiTutorStore(),
         _taskStore = taskStore ?? TaskStore(),
         _engine = engine ?? PersonalizationEngine();
 
@@ -57,6 +61,7 @@ class AppState extends ChangeNotifier {
   final ModeStore _modeStore;
   final RoutineStore _routineStore;
   final LaunchStore _launchStore;
+  final AiTutorStore _aiTutorStore;
   final TaskStore _taskStore;
   final PersonalizationEngine _engine;
 
@@ -95,6 +100,7 @@ class AppState extends ChangeNotifier {
   PersonalizationModel? _model;
   RoutineLearner _routines = RoutineLearner();
   LaunchLearner _launches = LaunchLearner();
+  AiTutorSettings _aiTutor = AiTutorSettings.initial;
   ContextSnapshot _context = ContextSnapshot.initial;
   String? _currentModeId;
   ModeDecision? _decision;
@@ -113,6 +119,13 @@ class AppState extends ChangeNotifier {
   PersonalizationModel? get model => _model;
   RoutineLearner get routines => _routines;
   LaunchLearner get launches => _launches;
+  AiTutorSettings get aiTutor => _aiTutor;
+
+  Future<void> updateAiTutorSettings(AiTutorSettings settings) async {
+    _aiTutor = settings;
+    await _aiTutorStore.save(_aiTutor);
+    notifyListeners();
+  }
   ContextSnapshot get sensorContext => _context;
   ModeDecision? get decision => _decision;
   PendingTransition? get pendingTransition => _pendingTransition;
@@ -157,6 +170,7 @@ class AppState extends ChangeNotifier {
     _model = await _profileStore.loadModel() ?? PersonalizationModel.seed(_modes);
     _routines = await _routineStore.load();
     _launches = await _launchStore.load();
+    _aiTutor = await _aiTutorStore.load();
     _currentModeId = await _profileStore.loadCurrentModeId();
     _currentModeId ??= _modes.isNotEmpty ? _modes.first.id : null;
     _tasks = await _taskStore.load();
@@ -386,6 +400,28 @@ class AppState extends ChangeNotifier {
       await windowsOpenUrlAdapter.fire(env.openUrl!);
       await _recordLaunchObservation(mode.id, env.openUrl!);
     }
+    if (env.aiTutorEnabled && _aiTutor.enabled) {
+      // A second, independent "open" — not learned, not overridden by the
+      // per-mode launch learner, just the one global prompt applied
+      // wherever a mode opts in.
+      await windowsOpenUrlAdapter.fire(_aiTutor.buildUrl());
+    }
+  }
+
+  /// Everything `_applyEnvironment` would fire for this mode, in plain
+  /// words — what the Switch-mode sheet and the post-switch confirmation
+  /// show, so picking a mode visibly shows what it actually does instead
+  /// of a silent change.
+  List<String> describeEnvironment(Mode mode) {
+    final env = mode.environment;
+    if (env == null || env.isEmpty) return const [];
+    return [
+      if (env.brightness != null) 'brightness ${env.brightness}%',
+      if (env.volume != null) 'volume ${env.volume}%',
+      if (env.openUrl != null) 'opens ${env.openUrl}',
+      if (env.aiTutorEnabled && _aiTutor.enabled) 'opens ChatGPT (study prompt)',
+      if (env.alexaSceneId != null) 'Alexa "${env.alexaSceneId}"',
+    ];
   }
 
   // ---------------------------------------------------------------------
@@ -417,21 +453,36 @@ class AppState extends ChangeNotifier {
     if (trimmed.isEmpty) return;
 
     await _recordLaunchObservation(modeId, trimmed);
-
-    final learned = _launches.learnedForMode(modeId);
-    if (learned != null) {
-      final index = _modes.indexWhere((m) => m.id == modeId);
-      if (index != -1 && _modes[index].environment?.openUrl != learned.target) {
-        final mode = _modes[index];
-        mode.environment = (mode.environment ?? const EnvironmentProfile()).copyWith(
-          openUrl: learned.target,
-        );
-        await updateMode(mode);
-      }
-    }
+    await _promoteLearnedDefaultIfConfident(modeId);
 
     await windowsOpenUrlAdapter.fire(trimmed);
     notifyListeners();
+  }
+
+  /// Checks whether `modeId` now has a confident learned target (see
+  /// `LaunchLearner.learnedForMode`) and, if so, writes it into that
+  /// mode's `EnvironmentProfile`. Shared by `recordLaunch` (learned
+  /// launch targets, prefixed as plain URLs) and
+  /// `_pollAdaptiveBrightness` (learned brightness, prefixed `brightness:`
+  /// so it lands on `environment.brightness` instead of `environment.openUrl`).
+  Future<void> _promoteLearnedDefaultIfConfident(String modeId) async {
+    final learned = _launches.learnedForMode(modeId);
+    if (learned == null) return;
+
+    final index = _modes.indexWhere((m) => m.id == modeId);
+    if (index == -1) return;
+    final mode = _modes[index];
+
+    const brightnessPrefix = 'brightness:';
+    if (learned.target.startsWith(brightnessPrefix)) {
+      final value = int.tryParse(learned.target.substring(brightnessPrefix.length));
+      if (value == null || mode.environment?.brightness == value) return;
+      mode.environment = (mode.environment ?? const EnvironmentProfile()).copyWith(brightness: value);
+    } else {
+      if (mode.environment?.openUrl == learned.target) return;
+      mode.environment = (mode.environment ?? const EnvironmentProfile()).copyWith(openUrl: learned.target);
+    }
+    await updateMode(mode);
   }
 
   /// The time-of-day counterpart, independent of any mode — "around
@@ -529,6 +580,7 @@ class AppState extends ChangeNotifier {
     final now = effectiveNow;
     _checkScheduledModes(now);
     _checkTimeLaunches(now);
+    _pollAdaptiveBrightness();
 
     final due = _routines.dueRoutine(now, _currentModeId!);
     if (due == null) return;
@@ -551,6 +603,22 @@ class AppState extends ChangeNotifier {
     if (_timeLaunchFiredToday[fireKey] == todayKey) return;
     _timeLaunchFiredToday[fireKey] = todayKey;
     await windowsOpenUrlAdapter.fire(due.target);
+  }
+
+  /// Adaptive Mode's whole trick: while it's the active mode, notice what
+  /// brightness the user actually settles the laptop at (not what DayOne
+  /// last set — the real current value, read back via WMI) and log it as
+  /// an observation, same tally/threshold machinery as a learned launch.
+  /// No-ops entirely for any mode without `adaptsBrightness` set.
+  Future<void> _pollAdaptiveBrightness() async {
+    final mode = currentMode;
+    if (!mode.adaptsBrightness) return;
+    final current = await windowsBrightnessAdapter.readCurrentBrightness();
+    if (current == null) return;
+    final bucket = ((current / 10).round() * 10).clamp(0, 100);
+    _launches.recordModeLaunch(mode.id, 'brightness:$bucket');
+    await _launchStore.save(_launches);
+    await _promoteLearnedDefaultIfConfident(mode.id);
   }
 
   /// The deterministic counterpart to learned routines: a mode with
@@ -595,6 +663,7 @@ class AppState extends ChangeNotifier {
     await _modeStore.deleteAll();
     await _routineStore.deleteAll();
     await _launchStore.deleteAll();
+    await _aiTutorStore.deleteAll();
     await NotificationService.instance.cancelPendingNotification();
     mockAdapter.log.clear();
 
@@ -603,6 +672,7 @@ class AppState extends ChangeNotifier {
     _model = null;
     _routines = RoutineLearner();
     _launches = LaunchLearner();
+    _aiTutor = AiTutorSettings.initial;
     _timeLaunchFiredToday.clear();
     _context = ContextSnapshot.initial;
     _currentModeId = _modes.first.id;

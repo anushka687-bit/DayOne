@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../models/environment_profile.dart';
 import '../models/mode.dart';
 import '../models/pending_transition.dart';
 import '../models/task_item.dart';
@@ -340,13 +341,25 @@ class _ModeBanner extends StatelessWidget {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+      // DraggableScrollableSheet instead of a plain Column: the mode list
+      // (now 7, not the original 4) can be taller than the default bottom
+      // sheet height, and a non-scrollable Column just overflows off the
+      // bottom instead of scrolling. This lets the sheet open tall and
+      // scroll the rest, and the user can still drag it further open.
+      builder: (sheetContext) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.7,
+        minChildSize: 0.4,
+        maxChildSize: 0.92,
+        builder: (context, scrollController) => SafeArea(
+          child: ListView(
+            controller: scrollController,
+            padding: EdgeInsets.zero,
+            children: [
             const Padding(
               padding: EdgeInsets.fromLTRB(20, 20, 20, 8),
               child: Align(
@@ -357,20 +370,51 @@ class _ModeBanner extends StatelessWidget {
                 ),
               ),
             ),
-            ...state.modes.map((m) => ListTile(
-                  title: Text(m.label),
-                  subtitle: Text(m.tagline, style: const TextStyle(color: AppColors.inkSoft)),
-                  trailing: m.id == state.currentMode.id
-                      ? const Icon(Icons.check, color: AppColors.accent)
-                      : null,
-                  onTap: () {
-                    Navigator.of(sheetContext).pop();
-                    state.recordOverride(m.id);
-                  },
-                )),
+            ...state.modes.map((m) {
+              final applied = state.describeEnvironment(m);
+              return ListTile(
+                title: Text(m.label),
+                subtitle: Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(m.tagline, style: const TextStyle(color: AppColors.inkSoft)),
+                      if (applied.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            applied.join(' · '),
+                            style: const TextStyle(color: AppColors.accent, fontSize: 11),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                isThreeLine: applied.isNotEmpty,
+                trailing: m.id == state.currentMode.id
+                    ? const Icon(Icons.check, color: AppColors.accent)
+                    : null,
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  state.recordOverride(m.id);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        applied.isEmpty
+                            ? 'Switched to ${m.label}.'
+                            : 'Switched to ${m.label} — ${applied.join(', ')}.',
+                      ),
+                      duration: const Duration(seconds: 4),
+                    ),
+                  );
+                },
+              );
+            }),
             const SizedBox(height: 12),
           ],
         ),
+      ),
       ),
     );
   }
@@ -390,6 +434,10 @@ class _MetricsStrip extends StatelessWidget {
     final env = mode.environment;
     final pendingCount = state.pendingTasks.length;
     final updateCount = state.model?.updateCount ?? 0;
+    final opens = [
+      if (env?.openUrl != null) env!.openUrl!,
+      if (env?.aiTutorEnabled == true && state.aiTutor.enabled) 'ChatGPT',
+    ];
 
     return Wrap(
       spacing: 12,
@@ -398,14 +446,22 @@ class _MetricsStrip extends StatelessWidget {
         MetricTile(
           icon: Icons.brightness_6_outlined,
           label: 'Target brightness',
-          value: env?.brightness != null ? '${env!.brightness}%' : '—',
-          note: 'Applied to this laptop',
+          value: env?.brightness != null
+              ? '${env!.brightness}%'
+              : (mode.adaptsBrightness ? 'Learning…' : '—'),
+          note: mode.adaptsBrightness ? 'Learned from habit' : 'Applied to this laptop',
         ),
         MetricTile(
           icon: Icons.volume_up_outlined,
           label: 'Target volume',
           value: env?.volume != null ? '${env!.volume}%' : '—',
           note: 'Applied to this laptop',
+        ),
+        MetricTile(
+          icon: Icons.open_in_new,
+          label: 'Opens',
+          value: opens.isEmpty ? '—' : '${opens.length}',
+          note: opens.isEmpty ? 'Nothing configured' : opens.join(', '),
         ),
         MetricTile(
           icon: Icons.checklist_outlined,

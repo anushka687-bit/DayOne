@@ -60,6 +60,16 @@ class Mode {
   /// just on a manual trigger. See `AppState._applyEnvironment`.
   EnvironmentProfile? environment;
 
+  /// If true, DayOne periodically reads this laptop's *actual* current
+  /// brightness while this mode is active (not just the value it set) and
+  /// learns from it — see `AppState._pollAdaptiveBrightness`. Once the
+  /// same brightness has been observed enough times, it's promoted into
+  /// `environment.brightness`, same "seen it enough times" idea as a
+  /// learned launch, applied to a numeric setting instead of a URL. This
+  /// is what makes Adaptive Mode actually adapt, rather than just being an
+  /// empty mode.
+  bool adaptsBrightness;
+
   Mode({
     required this.id,
     required this.label,
@@ -69,6 +79,7 @@ class Mode {
     List<SceneTriggerRef>? sceneTriggers,
     this.scheduledMinuteOfDay,
     this.environment,
+    this.adaptsBrightness = false,
   }) : sceneTriggers = sceneTriggers ?? [];
 
   Map<String, dynamic> toJson() => {
@@ -80,6 +91,7 @@ class Mode {
         'sceneTriggers': sceneTriggers.map((s) => s.toJson()).toList(),
         'scheduledMinuteOfDay': scheduledMinuteOfDay,
         'environment': environment?.toJson(),
+        'adaptsBrightness': adaptsBrightness,
       };
 
   factory Mode.fromJson(Map<String, dynamic> json) => Mode(
@@ -98,6 +110,7 @@ class Mode {
         environment: json['environment'] == null
             ? null
             : EnvironmentProfile.fromJson(json['environment'] as Map<String, dynamic>),
+        adaptsBrightness: json['adaptsBrightness'] as bool? ?? false,
       );
 
   static String formatMinuteOfDay(int minute) {
@@ -162,14 +175,35 @@ class Mode {
         Mode(
           id: 'study',
           label: 'Study Mode',
-          tagline: 'Heads-down study — VTOP opens automatically.',
+          tagline: 'Heads-down study — VTOP and your AI study buddy open automatically.',
           layout: LayoutArchetype.guided,
           builtIn: true,
           environment: const EnvironmentProfile(
             brightness: 90,
             volume: 20,
             openUrl: 'https://vtop.vit.ac.in/vtop/open/page',
+            aiTutorEnabled: true,
           ),
+        ),
+        Mode(
+          id: 'music',
+          label: 'Music Mode',
+          tagline: 'Put on music and stay heads-down — volume up, screen dimmed.',
+          layout: LayoutArchetype.minimal,
+          builtIn: true,
+          environment: const EnvironmentProfile(
+            brightness: 35,
+            volume: 70,
+            openUrl: 'spotify:',
+          ),
+        ),
+        Mode(
+          id: 'adaptive',
+          label: 'Adaptive Mode',
+          tagline: "Starts blank and learns your usual brightness from how you actually use it.",
+          layout: LayoutArchetype.guided,
+          builtIn: true,
+          adaptsBrightness: true,
         ),
       ];
 }

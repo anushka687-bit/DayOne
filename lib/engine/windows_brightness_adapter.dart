@@ -54,4 +54,31 @@ class WindowsBrightnessAdapter implements TriggerAdapter {
       // over a trigger that couldn't be delivered.
     }
   }
+
+  /// Reads this laptop's *current* brightness (0–100), independent of
+  /// anything DayOne set — used by Adaptive Mode to notice what brightness
+  /// the user actually settles on while that mode is active, rather than
+  /// only ever writing a value. Returns null on any failure (non-Windows,
+  /// no WMI brightness support, locked-down PowerShell) — callers treat
+  /// that as "nothing to observe right now," never an error to surface.
+  Future<int?> readCurrentBrightness() async {
+    if (kIsWeb || !Platform.isWindows) return null;
+    try {
+      final result = await Process.run('powershell', [
+        '-NoProfile',
+        '-Command',
+        '(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness)'
+            '.CurrentBrightness',
+      ]);
+      final text = (result.stdout as String?)?.trim();
+      if (text == null || text.isEmpty) return null;
+      final value = int.tryParse(text);
+      if (value == null) return null;
+      if (value < 0) return 0;
+      if (value > 100) return 100;
+      return value;
+    } catch (_) {
+      return null;
+    }
+  }
 }

@@ -19,7 +19,16 @@ class ModesScreen extends StatelessWidget {
     final state = context.watch<AppState>();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Modes')),
+      appBar: AppBar(
+        title: const Text('Modes'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.psychology_outlined),
+            tooltip: 'AI study buddy prompt',
+            onPressed: () => _editAiTutorPrompt(context, state),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: AppColors.ink,
         foregroundColor: AppColors.paper,
@@ -75,7 +84,17 @@ class ModesScreen extends StatelessWidget {
                               'Alexa "${mode.environment!.alexaSceneId}"',
                             if (mode.environment!.openUrl != null)
                               'opens ${mode.environment!.openUrl}',
+                            if (mode.environment!.aiTutorEnabled)
+                              'opens ChatGPT (study prompt)',
                           ].join(' · '),
+                          style: const TextStyle(color: AppColors.accent, fontSize: 11),
+                        ),
+                      ),
+                    if (mode.adaptsBrightness)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(
+                          _brightnessProgressText(state, mode),
                           style: const TextStyle(color: AppColors.accent, fontSize: 11),
                         ),
                       ),
@@ -124,16 +143,86 @@ class ModesScreen extends StatelessWidget {
     );
   }
 
-  /// The top thing observed opening in this mode, if it hasn't already
-  /// become the configured default and isn't confident enough yet to have
-  /// been promoted automatically — purely a "here's what DayOne's
-  /// noticing" progress indicator.
+  /// The top *non-brightness* thing observed opening in this mode, if it
+  /// hasn't already become the configured default and isn't confident
+  /// enough yet to have been promoted automatically — purely a "here's
+  /// what DayOne's noticing" progress indicator. Brightness observations
+  /// (Adaptive Mode) are shown separately by `_brightnessProgressText`.
   LearnedModeLaunch? _learnedButNotYetDefault(AppState state, Mode mode) {
     final top = state.launches.topObservationForMode(mode.id);
     if (top == null) return null;
+    if (top.target.startsWith('brightness:')) return null;
     if (top.target == mode.environment?.openUrl) return null;
     if (top.confidence >= LaunchLearner.confidenceThreshold) return null;
     return top;
+  }
+
+  String _brightnessProgressText(AppState state, Mode mode) {
+    final confirmed = mode.environment?.brightness;
+    final top = state.launches.topObservationForMode(mode.id);
+    final isBrightnessObservation = top != null && top.target.startsWith('brightness:');
+
+    if (isBrightnessObservation && top.confidence < LaunchLearner.confidenceThreshold) {
+      final value = top.target.substring('brightness:'.length);
+      return 'Learning: settled around $value% brightness ${top.confidence} '
+          'time${top.confidence == 1 ? '' : 's'} — a couple more and it becomes the default.';
+    }
+    if (confirmed != null) {
+      return 'Learned brightness: $confirmed% (still watching for changes).';
+    }
+    return 'Learning your usual brightness — no default set yet.';
+  }
+
+  Future<void> _editAiTutorPrompt(BuildContext context, AppState state) async {
+    final controller = TextEditingController(text: state.aiTutor.promptTemplate);
+    bool enabled = state.aiTutor.enabled;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('AI study buddy prompt'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Sent to ChatGPT (chatgpt.com) as a pre-filled message whenever a '
+                  'mode with "AI study buddy" turned on becomes active — e.g. Study Mode.',
+                  style: TextStyle(color: AppColors.inkSoft, fontSize: 12, height: 1.4),
+                ),
+                const SizedBox(height: 14),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Enabled'),
+                  value: enabled,
+                  onChanged: (v) => setDialogState(() => enabled = v),
+                ),
+                TextField(
+                  controller: controller,
+                  maxLines: 5,
+                  decoration: const InputDecoration(labelText: 'How you like things explained'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result != true || !context.mounted) return;
+    await state.updateAiTutorSettings(
+      state.aiTutor.copyWith(enabled: enabled, promptTemplate: controller.text.trim()),
+    );
   }
 
   Future<void> _logLaunch(BuildContext context, Mode mode) async {
@@ -215,6 +304,8 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
   bool _alexaEnabled = false;
   bool _openUrlEnabled = false;
   late TextEditingController _openUrl;
+  bool _aiTutorEnabled = false;
+  bool _adaptsBrightness = false;
 
   static const _adapterChoices = {
     'mock': 'Simulated smart-home link',
@@ -241,6 +332,8 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
     _alexaEventName = TextEditingController(text: env?.alexaSceneId ?? '');
     _openUrlEnabled = env?.openUrl != null;
     _openUrl = TextEditingController(text: env?.openUrl ?? '');
+    _aiTutorEnabled = env?.aiTutorEnabled ?? false;
+    _adaptsBrightness = m?.adaptsBrightness ?? false;
 
     final firstTrigger = (m?.sceneTriggers.isNotEmpty ?? false) ? m!.sceneTriggers.first : null;
     _adapterId = 'mock';
@@ -406,6 +499,28 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
                   hintText: 'https://vtop.vit.ac.in/vtop/open/page',
                 ),
               ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('AI study buddy (ChatGPT)'),
+              subtitle: const Text(
+                'Opens chatgpt.com pre-filled with your explanation-style prompt — '
+                'edit the prompt from the icon in the Modes app bar.',
+                style: TextStyle(fontSize: 11),
+              ),
+              value: _aiTutorEnabled,
+              onChanged: (v) => setState(() => _aiTutorEnabled = v),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Learn brightness from habit (Adaptive)'),
+              subtitle: const Text(
+                'Instead of a fixed brightness, DayOne watches what you actually '
+                'set the screen to while this mode is active and learns it.',
+                style: TextStyle(fontSize: 11),
+              ),
+              value: _adaptsBrightness,
+              onChanged: (v) => setState(() => _adaptsBrightness = v),
+            ),
             const SizedBox(height: 20),
             const Text('Smart-home scene (optional)',
                 style: TextStyle(fontWeight: FontWeight.w600)),
@@ -469,6 +584,7 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
       openUrl: _openUrlEnabled && _openUrl.text.trim().isNotEmpty
           ? _openUrl.text.trim()
           : null,
+      aiTutorEnabled: _aiTutorEnabled,
     );
 
     if (_isNew) {
@@ -481,6 +597,7 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
         sceneTriggers: sceneTriggers,
         scheduledMinuteOfDay: _scheduledMinute,
         environment: environment.isEmpty ? null : environment,
+        adaptsBrightness: _adaptsBrightness,
       ));
     } else {
       final existing = widget.existing!;
@@ -493,6 +610,7 @@ class _ModeEditorSheetState extends State<_ModeEditorSheet> {
         sceneTriggers: sceneTriggers,
         scheduledMinuteOfDay: _scheduledMinute,
         environment: environment.isEmpty ? null : environment,
+        adaptsBrightness: _adaptsBrightness,
       ));
     }
     Navigator.of(context).pop();
